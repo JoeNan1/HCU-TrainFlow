@@ -206,13 +206,15 @@ def _run_command(store, tid, operation_id, card, lease, *, control_plane=False, 
         occupied = db.execute("SELECT o.id FROM operations o JOIN events e ON json_extract(e.payload,'$.operation')=o.id WHERE e.kind='operation-started' AND json_extract(e.payload,'$.lease.resource')=? AND o.status IN ('started','unknown')", (lease["resource"],)).fetchone()
         if occupied:
             raise FlowError("Resource already has an unresolved execution, including in another task")
+        # Effective budget includes only extensions the task policy pre-authorized.
+        budget = store.effective_budget(db, tid)
         count = db.execute("SELECT count(*) FROM operations WHERE task=?", (tid,)).fetchone()[0]
-        if count >= task["spec"].get("budget", {}).get("max_operations", 100):
+        if count >= budget["max_operations"]:
             raise FlowError("Operation budget exhausted")
         spent = sum(operation_budget_seconds(db, row["id"], json.loads(row["result"] or "{}"),
                                             reserve=row["status"] in {"started", "unknown"})
                     for row in db.execute("SELECT id,status,result FROM operations WHERE task=?", (tid,)))
-        remaining = task["spec"].get("budget", {}).get("max_seconds", float("inf")) - spent
+        remaining = budget["max_seconds"] - spent
         if plan["timeout_seconds"] > remaining:
             raise FlowError("Command timeout exceeds remaining execution budget")
         uncertain = db.execute("SELECT id,status FROM operations WHERE task=? AND status IN ('started','unknown')", (tid,)).fetchall()

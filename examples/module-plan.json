@@ -1,0 +1,59 @@
+{
+  "schema_version": 1,
+  "subworkflow": "quality-accept",
+  "inputs": {
+    "contract": {
+      "context": "REPLACE with the task context hash",
+      "sample_fingerprint": "frozen-sample",
+      "aggregation": "mean",
+      "initial_state_fingerprint": "state",
+      "training_recipe_fingerprint": "recipe",
+      "min_steps": 3,
+      "atol": 0.01,
+      "rtol": 0.0,
+      "tolerance_basis": "synthetic example only"
+    },
+    "baseline": {
+      "steps": [
+        1,
+        2,
+        3
+      ],
+      "loss": [
+        2.0,
+        1.9,
+        1.8
+      ],
+      "executed": 3
+    },
+    "candidate": {
+      "steps": [
+        1,
+        2,
+        3
+      ],
+      "loss": [
+        2.0,
+        1.9,
+        1.8
+      ],
+      "executed": 3
+    },
+    "correctness": {
+      "profiler_off": true,
+      "measurement_protocol": {
+        "max_relative_mad": 0.1
+      }
+    },
+    "baseline_times": [
+      10,
+      10,
+      10
+    ],
+    "candidate_times": [
+      9,
+      9,
+      9
+    ]
+  }
+}

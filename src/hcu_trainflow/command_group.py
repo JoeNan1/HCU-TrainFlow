@@ -164,7 +164,7 @@ def _run_group(store, tid, operation_id, card, leases, *, assignment=None, owner
             if occupied:
                 raise FlowError("Group resource has an unresolved execution, including in another task")
         history = db.execute("SELECT id,status,result FROM operations WHERE task=?", (tid,)).fetchall()
-        _budget(db, history, task["spec"].get("budget", {}), plan["timeout_seconds"])
+        _budget(db, history, store.effective_budget(db, tid), plan["timeout_seconds"])
         for other in history:
             if other["status"] not in {"started", "unknown"}:
                 continue

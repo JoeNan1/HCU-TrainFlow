@@ -18,6 +18,10 @@ class FlowError(ValueError):
     pass
 
 
+class PipelineContextConflict(FlowError):
+    """A retained run cannot write facts into a changed task identity."""
+
+
 def _check_lease_ttl(ttl):
     if (isinstance(ttl, bool) or not isinstance(ttl, (int, float))
             or not 0 < ttl <= 86400 or not math.isfinite(ttl)):
@@ -157,8 +161,124 @@ GATES = {"environment_checked": ["environment"], "baseline_validated": ["baselin
          "training": ["environment", "stage-quality", "scale"], "completed": ["completion"]}
 
 
+DEGRADE_ACTIONS = {
+    # action -> (required policy fields, optional policy fields)
+    "micro_batch_down": (("min",), ()),
+    "recompute_on": (("allow",), ()),
+    "rebalance_parallel": (("allow",), ()),
+    "layers_down": (("min_layers",), ("record_scope_gap",)),
+    "resume_from_checkpoint": ((), ("max_attempts",)),
+    "restart_clean": ((), ("max_attempts",)),
+}
+
+DEGRADE_DETAILS = {
+    # action -> detail keys an Agent may record when applying the step
+    "micro_batch_down": ("micro_batch",),
+    "recompute_on": ("recompute",),
+    "rebalance_parallel": ("tp", "pp", "dp"),
+    "layers_down": ("layers", "scope_gap"),
+    "resume_from_checkpoint": (),
+    "restart_clean": (),
+}
+
+
+def _positive_integer(value):
+    return type(value) is int and value >= 1
+
+
+def _validate_degrade_ladder(ladder):
+    """A declared, bounded list of repairs an Agent may apply without a person."""
+    if not isinstance(ladder, list) or not ladder:
+        raise FlowError("Degrade ladder must be a nonempty list")
+    seen = set()
+    for row in ladder:
+        if not isinstance(row, dict):
+            raise FlowError("Invalid degrade step")
+        action = row.get("action")
+        if action not in DEGRADE_ACTIONS:
+            raise FlowError("Unknown degrade action")
+        if action in seen:
+            raise FlowError("Degrade actions must be unique")
+        seen.add(action)
+        required, optional = DEGRADE_ACTIONS[action]
+        allowed = {"action", *required, *optional}
+        if set(row) - allowed or set(required) - set(row):
+            raise FlowError("Degrade step fields do not match its action: " + action)
+        if action == "micro_batch_down" and not _positive_integer(row["min"]):
+            raise FlowError("Degrade requires a positive micro-batch floor")
+        if action == "layers_down" and not _positive_integer(row["min_layers"]):
+            raise FlowError("Degrade requires a positive layer floor")
+        if action in {"recompute_on", "rebalance_parallel"}:
+            names = row["allow"]
+            if (not isinstance(names, list) or not names
+                    or any(not isinstance(name, str) or not name.strip() for name in names)
+                    or len(set(names)) != len(names)):
+                raise FlowError("Degrade allow-list must contain distinct names")
+        if "max_attempts" in row and not _positive_integer(row["max_attempts"]):
+            raise FlowError("max_attempts must be a positive integer")
+        if "record_scope_gap" in row and type(row["record_scope_gap"]) is not bool:
+            raise FlowError("record_scope_gap must be boolean")
+
+
+def _validate_budget_extension(value):
+    allowed = {"max_additions", "operations_per_addition",
+               "hard_total_operations", "seconds_per_addition"}
+    if not isinstance(value, dict) or set(value) - allowed:
+        raise FlowError("Unknown budget extension fields")
+    for key in ("max_additions", "operations_per_addition", "hard_total_operations"):
+        if not _positive_integer(value.get(key)):
+            raise FlowError("Budget extension requires positive integers: " + key)
+    if value["operations_per_addition"] > value["hard_total_operations"]:
+        raise FlowError("Per-addition operations cannot exceed the hard total ceiling")
+    if "seconds_per_addition" in value:
+        seconds = value["seconds_per_addition"]
+        if isinstance(seconds, bool) or not isinstance(seconds, (int, float)) or not 0 < seconds < float("inf"):
+            raise FlowError("seconds_per_addition must be positive and finite")
+
+
+def validate_autonomy(autonomy):
+    """Closed policy language for tasks that have no human channel.
+
+    Only declared decisions are permitted: who may review, which recurring
+    questions have a written answer, and which bounded repairs or budget
+    additions an Agent may apply on its own. Unknown fields are rejected so a
+    policy cannot silently grow into an unbounded permission grant.
+    """
+    allowed = {"mode", "reviewers", "question_answers", "escalation"}
+    if not isinstance(autonomy, dict) or set(autonomy) - allowed:
+        raise FlowError("Unknown autonomy policy fields")
+    if autonomy.get("mode") != "autonomous":
+        raise FlowError("Only mode=autonomous is supported")
+    reviewers = autonomy.get("reviewers")
+    if (not isinstance(reviewers, list) or not reviewers
+            or any(not isinstance(name, str) or not name.strip() for name in reviewers)
+            or len(set(reviewers)) != len(reviewers)):
+        raise FlowError("Autonomy requires distinct declared reviewer identities")
+    answers = autonomy.get("question_answers", [])
+    if not isinstance(answers, list):
+        raise FlowError("Autonomy question answers must be a list")
+    for row in answers:
+        if (not isinstance(row, dict) or set(row) != {"match", "answer", "source"}
+                or any(not isinstance(row[key], str) or not row[key].strip() for key in row)):
+            raise FlowError("Autonomy answers require nonempty match, answer and source")
+    escalation = autonomy.get("escalation", {})
+    if not isinstance(escalation, dict) or set(escalation) - {"degrade_ladder", "budget_extension", "acceptance_edit"}:
+        raise FlowError("Unknown autonomy escalation fields")
+    if "degrade_ladder" in escalation:
+        _validate_degrade_ladder(escalation["degrade_ladder"])
+    if "budget_extension" in escalation:
+        _validate_budget_extension(escalation["budget_extension"])
+    if "acceptance_edit" in escalation and escalation["acceptance_edit"] not in {"forbid", "add-only"}:
+        raise FlowError("acceptance_edit must be forbid or add-only")
+    return autonomy
+
+
+PROFILE_ID = re.compile(r"^[a-z][a-z0-9]*(-[a-z0-9]+)*$")
+
+
 def validate_spec(spec):
-    allowed = {"schema_version", "task_id", "mode", "objective", "context", "permissions", "recovery_owner", "budget", "external_job"}
+    allowed = {"schema_version", "task_id", "mode", "objective", "context", "permissions",
+               "recovery_owner", "budget", "external_job", "autonomy", "profile"}
     if set(spec) - allowed or spec.get("schema_version") != 1:
         raise FlowError("Unsupported TaskSpec version or unknown fields")
     safe_id(spec.get("task_id"))
@@ -174,6 +294,19 @@ def validate_spec(spec):
     for value in spec.get("budget", {}).values():
         if isinstance(value, bool) or not isinstance(value, (int, float)) or not 0 < value < float("inf"):
             raise FlowError("Budgets must be positive finite numbers")
+    if "autonomy" in spec:
+        validate_autonomy(spec["autonomy"])
+    if "profile" in spec:
+        # A sub-workflow selection must be reproducible: the chosen id and the
+        # reason it was chosen are both required, so a later reader can tell
+        # whether the thinning was deliberate.
+        profile = spec["profile"]
+        if not isinstance(profile, dict) or set(profile) != {"id", "reason"}:
+            raise FlowError("Task profile requires exactly id and reason")
+        if not isinstance(profile["id"], str) or not PROFILE_ID.match(profile["id"]):
+            raise FlowError("Task profile id must be a hyphenated slug")
+        if not isinstance(profile["reason"], str) or not profile["reason"].strip():
+            raise FlowError("Task profile requires a reason for the chosen sub-workflow")
     return spec
 
 
@@ -195,6 +328,9 @@ class Store:
             CREATE TABLE IF NOT EXISTS cursors(peer TEXT PRIMARY KEY,seq INTEGER NOT NULL);
             CREATE TABLE IF NOT EXISTS assignments(id TEXT PRIMARY KEY,task TEXT,payload TEXT,status TEXT);
             CREATE TABLE IF NOT EXISTS flows(task TEXT PRIMARY KEY,plan TEXT,goal TEXT,context TEXT);
+            CREATE TABLE IF NOT EXISTS budget_extensions(task TEXT NOT NULL,addition INTEGER NOT NULL,operations INTEGER NOT NULL,seconds REAL NOT NULL,reason TEXT NOT NULL,artifact TEXT,created TEXT NOT NULL,PRIMARY KEY(task,addition));
+            CREATE TABLE IF NOT EXISTS pipeline_runs(id TEXT PRIMARY KEY,task TEXT NOT NULL,name TEXT NOT NULL,plan TEXT NOT NULL,context TEXT NOT NULL,revision INTEGER NOT NULL,status TEXT NOT NULL,result TEXT,created TEXT NOT NULL,updated TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS pipeline_steps(run TEXT NOT NULL,step TEXT NOT NULL,capability TEXT NOT NULL,action TEXT NOT NULL,status TEXT NOT NULL,artifact TEXT,report TEXT,result TEXT NOT NULL,created TEXT NOT NULL,updated TEXT NOT NULL,PRIMARY KEY(run,step));
             CREATE TABLE IF NOT EXISTS flow_rounds(task TEXT,number INTEGER,context TEXT,revision INTEGER,goal TEXT,candidate TEXT,review TEXT,status TEXT,failures INTEGER DEFAULT 0,PRIMARY KEY(task,number));
             CREATE TABLE IF NOT EXISTS flow_guidance(task TEXT,id TEXT,context TEXT,status TEXT,note TEXT,created TEXT,PRIMARY KEY(task,id));
             CREATE TABLE IF NOT EXISTS flow_guidance_cursor(task TEXT PRIMARY KEY,hash TEXT);
@@ -214,6 +350,9 @@ class Store:
             if row and row[0] != "1":
                 raise FlowError("Unsupported workspace schema; do not overwrite it")
             db.execute("INSERT OR IGNORE INTO meta VALUES('schema','1')")
+            columns = {row[1] for row in db.execute('PRAGMA table_info(pipeline_runs)')}
+            if 'input_identity' not in columns:
+                db.execute('ALTER TABLE pipeline_runs ADD COLUMN input_identity TEXT')
 
     @contextlib.contextmanager
     def db(self):
@@ -310,8 +449,10 @@ class Store:
                     raise FlowError("Artifact hash mismatch")
                 yield sha, data
 
-    def report(self, tid, kind, value):
+    def report(self, tid, kind, value, *, expected_revision=None):
         task = self.task(tid)
+        if expected_revision is not None and task["revision"] != expected_revision:
+            raise PipelineContextConflict("Task revision changed before recording Pipeline report")
         if value.get("context") != task["context"]:
             raise FlowError("Report belongs to another environment/model/source context")
         if value.get("status") not in {"pass", "fail", "incomplete", "complete"}:
@@ -329,7 +470,9 @@ class Store:
         sha = self.put(data)
         with self.db() as db:
             db.execute("BEGIN IMMEDIATE")
-            current = db.execute("SELECT context FROM tasks WHERE id=?", (tid,)).fetchone()
+            current = db.execute("SELECT context,revision FROM tasks WHERE id=?", (tid,)).fetchone()
+            if expected_revision is not None and current["revision"] != expected_revision:
+                raise PipelineContextConflict("Task revision changed while recording Pipeline report")
             if current["context"] != task["context"] or context_epoch(db, tid) != task["context_epoch"]:
                 raise FlowError("Task context changed while recording report; revalidate before retrying")
             db.execute("INSERT OR REPLACE INTO reports VALUES(?,?,?,?,?,?)", (tid, kind, task["context"], sha, value["status"], utc()))
@@ -365,6 +508,174 @@ class Store:
                         continue
             result[row["kind"]] = row
         return result
+
+    def pipeline_start(self, tid, run_id, name, plan, context, revision, input_identity=None):
+        """Create or resume a task-bound Pipeline run.
+
+        The run identity is supplied by the orchestrator and should include
+        the task, plan, context and revision.  Reusing an ID with different
+        inputs is rejected so a stale run cannot write into a new context.
+        """
+
+        # Empty task denotes a standalone run, without a synthetic Task row.
+        tid = tid or ""
+        if tid:
+            task = self.task(tid)
+            if task["context"] != context or task["revision"] != revision:
+                raise PipelineContextConflict("Pipeline context or revision is stale")
+        if not isinstance(run_id, str) or not run_id.strip() or not isinstance(name, str) or not name.strip():
+            raise FlowError("Pipeline run requires an ID and name")
+        if not isinstance(plan, dict):
+            raise FlowError("Pipeline plan must be an object")
+        plan_body = json.dumps(plan, sort_keys=True, ensure_ascii=False, allow_nan=False)
+        now = utc()
+        with self.db() as db:
+            db.execute("BEGIN IMMEDIATE")
+            self._pipeline_identity(db, {"task": tid, "context": context, "revision": revision})
+            row = db.execute("SELECT * FROM pipeline_runs WHERE id=?", (run_id,)).fetchone()
+            if row:
+                if (row["task"], row["name"], row["plan"], row["context"], row["revision"], row["input_identity"]) != (tid, name, plan_body, context, revision, input_identity):
+                    raise FlowError("Pipeline run ID is already bound to different inputs")
+                return dict(row)
+            db.execute("INSERT INTO pipeline_runs(id,task,name,plan,context,revision,status,result,created,updated,input_identity) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                       (run_id, tid, name, plan_body, context, revision, "running", None, now, now, input_identity))
+            self.event(db, tid, "pipeline-started", {"run": run_id, "name": name, "context": context, "revision": revision})
+            return {"id": run_id, "task": tid, "name": name, "plan": plan_body,
+                    "context": context, "revision": revision, "status": "running",
+                    "result": None, "created": now, "updated": now}
+
+    @staticmethod
+    def _pipeline_identity(db, run):
+        if not run["task"]:
+            return
+        task = db.execute("SELECT context,revision FROM tasks WHERE id=?", (run["task"],)).fetchone()
+        if not task or task["context"] != run["context"] or task["revision"] != run["revision"]:
+            raise PipelineContextConflict("Task context or revision changed while running Pipeline")
+
+    def pipeline_reopen(self, run_id):
+        with self.db() as db:
+            db.execute("BEGIN IMMEDIATE")
+            run = db.execute("SELECT * FROM pipeline_runs WHERE id=?", (run_id,)).fetchone()
+            if not run:
+                raise FlowError("Unknown Pipeline run")
+            self._pipeline_identity(db, run)
+            db.execute("UPDATE pipeline_runs SET status='running',result=NULL,updated=? WHERE id=?", (utc(), run_id))
+
+    def pipeline_step(self, run_id, step, capability, action, status, result, artifact=None, report=None):
+        """Persist one immutable step result after rechecking task identity."""
+
+        if not isinstance(result, dict):
+            raise FlowError("Pipeline step result must be an object")
+        if status not in {"pass", "complete", "fail", "incomplete", "unknown", "blocked"}:
+            raise FlowError("Unsupported Pipeline step status")
+        body = json.dumps(result, sort_keys=True, ensure_ascii=False, allow_nan=False)
+        now = utc()
+        with self.db() as db:
+            db.execute("BEGIN IMMEDIATE")
+            run = db.execute("SELECT * FROM pipeline_runs WHERE id=?", (run_id,)).fetchone()
+            if not run:
+                raise FlowError("Unknown Pipeline run")
+            if run["status"] not in {"running", "incomplete", "failed"}:
+                raise FlowError("Pipeline run is already terminal")
+            self._pipeline_identity(db, run)
+            db.execute("INSERT INTO pipeline_steps VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(run,step) DO UPDATE SET "
+                       "capability=excluded.capability,action=excluded.action,status=excluded.status,artifact=excluded.artifact,report=excluded.report,result=excluded.result,updated=excluded.updated",
+                       (run_id, step, capability, action, status, artifact, report, body, now, now))
+            self.event(db, run["task"], "pipeline-step-recorded", {"run": run_id, "step": step,
+                                                                      "status": status, "artifact": artifact, "report": report})
+        return {"run": run_id, "step": step, "status": status, "artifact": artifact, "report": report}
+
+    def pipeline_finish(self, run_id, status, result):
+        if status not in {"complete", "incomplete", "failed", "blocked", "interrupted", "conflicted"}:
+            raise FlowError("Unsupported Pipeline run status")
+        body = json.dumps(result, sort_keys=True, ensure_ascii=False, allow_nan=False)
+        now = utc()
+        with self.db() as db:
+            db.execute("BEGIN IMMEDIATE")
+            run = db.execute("SELECT * FROM pipeline_runs WHERE id=?", (run_id,)).fetchone()
+            if not run:
+                raise FlowError("Unknown Pipeline run")
+            if status != "conflicted":
+                self._pipeline_identity(db, run)
+            db.execute("UPDATE pipeline_runs SET status=?,result=?,updated=? WHERE id=?", (status, body, now, run_id))
+            self.event(db, run["task"], "pipeline-finished", {"run": run_id, "status": status})
+        return {"run": run_id, "status": status}
+
+    def effective_budget(self, db, tid):
+        """Declared budget plus graded, policy-authorized extensions."""
+        row = db.execute("SELECT spec FROM tasks WHERE id=?", (tid,)).fetchone()
+        if not row:
+            raise FlowError("Unknown task")
+        budget = (json.loads(row["spec"]) or {}).get("budget") or {}
+        operations = budget.get("max_operations", 100)
+        seconds = budget.get("max_seconds", float("inf"))
+        for extra in db.execute("SELECT operations,seconds FROM budget_extensions WHERE task=?", (tid,)):
+            operations += extra["operations"]
+            seconds += extra["seconds"]
+        return {"max_operations": operations, "max_seconds": seconds}
+
+    def budget_extension(self, tid, operations, seconds, reason):
+        """Add execution budget only where the autonomy policy pre-authorized it.
+
+        The policy's hard ceiling is absolute: an Agent may spend approved
+        headroom but never invent it, and every addition stays in the ledger and
+        event log with its stated reason.
+        """
+        task = self.task(tid)
+        policy = task["spec"].get("autonomy") or {}
+        rules = (policy.get("escalation") or {}).get("budget_extension")
+        if not isinstance(rules, dict):
+            raise FlowError("Task policy does not authorize budget extensions")
+        if not isinstance(reason, str) or not reason.strip():
+            raise FlowError("A budget extension needs the observed blocking reason")
+        if type(operations) is not int or operations < 0:
+            raise FlowError("Budget extension operations must be a nonnegative integer")
+        if isinstance(seconds, bool) or not isinstance(seconds, (int, float)) or seconds < 0 or not math.isfinite(seconds):
+            raise FlowError("Budget extension seconds must be finite and nonnegative")
+        if operations > rules["operations_per_addition"]:
+            raise FlowError("Requested operations exceed the declared per-addition limit")
+        if "seconds_per_addition" in rules and seconds > rules["seconds_per_addition"]:
+            raise FlowError("Requested seconds exceed the declared per-addition limit")
+        with self.db() as db:
+            task_row = db.execute("SELECT spec FROM tasks WHERE id=?", (tid,)).fetchone()
+            if not task_row or json.loads(task_row["spec"]).get("autonomy") != policy:
+                raise FlowError("Task policy changed while requesting an extension")
+            rows = db.execute("SELECT operations FROM budget_extensions WHERE task=?", (tid,)).fetchall()
+            if len(rows) >= rules["max_additions"]:
+                raise FlowError("Budget extension allowance is exhausted")
+            declared = ((json.loads(task_row["spec"]) or {}).get("budget") or {}).get("max_operations", 100)
+            if declared + sum(row["operations"] for row in rows) + operations > rules["hard_total_operations"]:
+                raise FlowError("Budget extension would exceed the declared hard operations ceiling")
+            addition = db.execute("SELECT COALESCE(MAX(addition),0) FROM budget_extensions WHERE task=?",
+                                  (tid,)).fetchone()[0] + 1
+        ledger = {"kind": "autonomy-budget-extension", "context": task["context"],
+                  "actor": "autonomy-policy", "policy": fingerprint(policy),
+                  "addition": addition, "operations": operations, "seconds": seconds, "reason": reason}
+        sha = self.put(json.dumps(ledger, sort_keys=True, ensure_ascii=False, allow_nan=False).encode())
+        with self.db() as db:
+            db.execute("BEGIN IMMEDIATE")
+            db.execute("INSERT INTO budget_extensions VALUES(?,?,?,?,?,?,?)",
+                       (tid, addition, operations, seconds, reason, sha, utc()))
+            self.event(db, tid, "budget-extended",
+                       {"addition": addition, "operations": operations, "seconds": seconds,
+                        "reason": reason, "evidence": sha, "actor": "autonomy-policy"})
+            budget = self.effective_budget(db, tid)
+        return {"task": tid, "addition": addition, "evidence": sha, "budget": budget,
+                "remaining_additions": rules["max_additions"] - addition}
+
+    def pipeline_state(self, run_id):
+        with self.db() as db:
+            run = db.execute("SELECT * FROM pipeline_runs WHERE id=?", (run_id,)).fetchone()
+            if not run:
+                raise FlowError("Unknown Pipeline run")
+            steps = [dict(row) for row in db.execute("SELECT * FROM pipeline_steps WHERE run=? ORDER BY rowid", (run_id,))]
+        value = dict(run)
+        value["steps"] = steps
+        if value.get("result"):
+            value["result"] = json.loads(value["result"])
+        for step in steps:
+            step["result"] = json.loads(step["result"])
+        return value
 
     def change_context(self, tid, context):
         if not isinstance(context, dict) or not context:

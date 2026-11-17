@@ -5,7 +5,7 @@ claims to authenticate reviewer identity, or treats a code review as a GPU test.
 """
 import json
 import time
-from .core import FlowError, GATES, atomic_write, child, context_epoch, safe_id, utc
+from .core import DEGRADE_DETAILS, FlowError, GATES, atomic_write, child, context_epoch, fingerprint, safe_id, utc
 from .skill_registry import STAGE_SKILLS, WIKI_UPDATE_SKILL
 
 DEFAULTS = {'max_rounds': 20, 'max_stalled_rounds': 3, 'full_review_every': 4,
@@ -29,6 +29,128 @@ def artifact_json(store, value):
 
 def retain(store, value):
     return store.put(json.dumps(value, sort_keys=True, ensure_ascii=False, allow_nan=False).encode())
+
+
+AUTONOMY_ACTOR = 'autonomy-policy'
+
+
+def autonomy(task):
+    """Declared autonomous policy for this task, or None for a human channel."""
+    policy = task['spec'].get('autonomy')
+    return policy if isinstance(policy, dict) and policy.get('mode') == 'autonomous' else None
+
+
+def policy_answer(policy, question):
+    """First declared answer whose match phrase occurs in the question text."""
+    text = ' '.join((question.get('id', ''), question.get('title', ''), question.get('body', ''))).lower()
+    for row in policy.get('question_answers') or []:
+        if row['match'].lower() in text:
+            return row
+    return None
+
+
+def dispose_policy(store, tid, task=None):
+    """Retain collected guidance as advisory; answer only declared questions.
+
+    Autonomous tasks have no human channel. Guidance is kept with an explicit
+    policy actor instead of impersonating a person, and a blocking question is
+    closed only when the declared policy answers it. Anything else stays open so
+    ``next_step`` halts with a retained reason rather than waiting.
+    """
+    task = task or store.task(tid)
+    policy = autonomy(task)
+    if policy is None:
+        return {'guidance': 0, 'questions': 0}
+    with store.db() as db:
+        guidance = [row['id'] for row in db.execute(
+            "SELECT id FROM flow_guidance WHERE task=? AND status IN ('pending','needs-human','queued')", (tid,))]
+        questions = [(row['id'], json.loads(row['payload'])) for row in db.execute(
+            "SELECT id,payload FROM flow_questions WHERE task=? AND status='open'", (tid,))]
+    answers = {}
+    for qid, payload in questions:
+        if not payload.get('blocking'):
+            continue
+        match = policy_answer(policy, payload)
+        if match is None:
+            continue
+        # Retain before the write transaction; Store.put uses its own connection.
+        answers[qid] = retain(store, {
+            'kind': 'autonomy-question-answer', 'context': task['context'], 'actor': AUTONOMY_ACTOR,
+            'policy': fingerprint(policy), 'question': qid, 'question_title': payload['title'],
+            'question_body': payload['body'], 'answer': match['answer'], 'source': match['source']})
+    if not guidance and not answers:
+        return {'guidance': 0, 'questions': 0}
+    with store.db() as db:
+        db.execute('BEGIN IMMEDIATE')
+        for sha in guidance:
+            db.execute("UPDATE flow_guidance SET status='not-applicable',note=? WHERE task=? AND id=?",
+                       ('autonomy-policy: no human channel; retained as advisory', tid, sha))
+            store.event(db, tid, 'human-guidance-acknowledged',
+                        {'guidance': sha, 'decision': 'not-applicable', 'actor': AUTONOMY_ACTOR,
+                         'note': 'autonomy policy: recorded as advisory, not as a human decision'})
+        for qid, sha in answers.items():
+            db.execute('INSERT OR REPLACE INTO flow_guidance VALUES(?,?,?,?,?,?)',
+                       (tid, sha, task['context'], 'applied', 'autonomy-policy: declared answer', utc()))
+            resolution = {'guidance': sha, 'note': 'autonomy-policy: declared answer'}
+            db.execute("UPDATE flow_questions SET status='closed',resolution=? WHERE task=? AND id=?",
+                       (json.dumps(resolution), tid, qid))
+            store.event(db, tid, 'human-question-resolved',
+                        {'id': qid, **resolution, 'actor': AUTONOMY_ACTOR})
+    return {'guidance': len(guidance), 'questions': len(answers)}
+
+
+MUST_ESCALATE = (
+    'authorization: new host, credential, permission or shared resource',
+    'acceptance: relaxing or rewriting the agreed criteria',
+    'objective: the target cannot be met; deliver the negative result',
+    'cancel: abandoning the task is a human decision',
+)
+
+
+def halt_options(store, task):
+    """Machine-readable menu of the actions a halt still permits.
+
+    Only what the policy already authorized is listed: the Agent still decides
+    which (if any) to apply and must record the observed reason. Anything outside
+    this menu stays a human decision.
+    """
+    policy = autonomy(task) or {}
+    escalation = policy.get('escalation') or {}
+    tid = task['id']
+    state = degradation_state(store, tid)
+    used = state['used']
+    degrade = []
+    for row in state['ladder']:
+        attempts = row.get('max_attempts')
+        if attempts is not None and used.get(row['action'], 0) >= attempts:
+            continue
+        degrade.append({**row, 'used': used.get(row['action'], 0)})
+    budget = None
+    rules = escalation.get('budget_extension')
+    if isinstance(rules, dict):
+        with store.db() as db:
+            extensions = db.execute("SELECT operations FROM budget_extensions WHERE task=?", (tid,)).fetchall()
+            spare = rules['hard_total_operations'] - store.effective_budget(db, tid)['max_operations']
+        remaining = rules['max_additions'] - len(extensions)
+        if remaining > 0 and spare > 0:
+            budget = {'remaining_additions': remaining,
+                      'operations_per_addition': rules['operations_per_addition'],
+                      'operations_until_hard_ceiling': spare}
+    with store.db() as db:
+        questions = [row['id'] for row in db.execute(
+            "SELECT id,payload FROM flow_questions WHERE task=? AND status='open'", (tid,))
+            if json.loads(row['payload']).get('blocking')]
+    return {'degrade': degrade, 'budget_extension': budget,
+            'resolve_question': questions, 'must_escalate': list(MUST_ESCALATE)}
+
+
+def _stop(store, task, result, reasons, **extra):
+    """Human tasks wait for a person; autonomous tasks halt with a reason."""
+    if autonomy(task) is None:
+        return {**result, 'action': 'human', 'reasons': reasons, **extra}
+    return {**result, 'action': 'halt', 'reasons': reasons,
+            'halt_reason': reasons[0] if reasons else 'policy-stop',
+            'options': halt_options(store, task), **extra}
 
 
 def get_flow(db, tid):
@@ -65,11 +187,9 @@ def knowledge_followup(task, goal, phase):
     }
 
 
-def start(store, tid, plan, reason=None):
-    task = store.task(tid)
-    if task['state'] in {'completed', 'cancelled'}:
-        raise FlowError('Create a new task for a new objective')
-    if set(plan) - (set(DEFAULTS) | {'acceptance'}):
+def validate_plan(plan):
+    """Validate a Flow plan; shared by start/replan and the site generator."""
+    if not isinstance(plan, dict) or set(plan) - (set(DEFAULTS) | {'acceptance'}):
         raise FlowError('Unknown flow-plan fields')
     plan = {**DEFAULTS, **plan}
     for key in DEFAULTS:
@@ -78,10 +198,42 @@ def start(store, tid, plan, reason=None):
     if not 1 <= plan['poll_seconds'] <= 3600:
         raise FlowError('Guidance polling interval must be 1..3600 seconds')
     acceptance = plan.get('acceptance')
-    if not isinstance(acceptance, dict) or not acceptance or any(not isinstance(v, str) or not v.strip() for v in acceptance.values()):
+    if (not isinstance(acceptance, dict) or not acceptance
+            or any(not isinstance(value, str) or not value.strip() for value in acceptance.values())):
         raise FlowError('Plan requires named, concrete acceptance criteria')
     for key in acceptance:
         safe_id(key)
+    return plan
+
+
+def check_acceptance_edit(task, previous_plan, acceptance):
+    """An autonomous task cannot quietly rewrite the agreed acceptance criteria.
+
+    ``forbid`` (the default) keeps replanning limited to limits and context;
+    ``add-only`` permits new criteria but never edits or drops an existing one.
+    Weakening a target needs a new task, where a person states the goal again.
+    """
+    policy = autonomy(task)
+    if policy is None:
+        return
+    previous = (previous_plan or {}).get('acceptance') or {}
+    if previous == acceptance:
+        return
+    mode = (policy.get('escalation') or {}).get('acceptance_edit', 'forbid')
+    removed = set(previous) - set(acceptance)
+    changed = {key for key in set(previous) & set(acceptance) if previous[key] != acceptance[key]}
+    if mode != 'add-only' or removed or changed:
+        raise FlowError('Autonomous replanning may not rewrite agreed acceptance criteria;'
+                        ' create a new task for a different objective')
+
+
+def start(store, tid, plan, reason=None):
+    task = store.task(tid)
+    if task['state'] in {'completed', 'cancelled'}:
+        raise FlowError('Create a new task for a new objective')
+    check_profile(task)
+    plan = validate_plan(plan)
+    acceptance = plan['acceptance']
     goal_record = {'objective': task['spec']['objective'], 'context': task['context'], 'plan': plan}
     if reason is not None:
         if not reason.strip():
@@ -94,6 +246,8 @@ def start(store, tid, plan, reason=None):
         if current['state'] in {'completed', 'cancelled'} or current['context'] != task['context'] or context_epoch(db, tid) != task['context_epoch']:
             raise FlowError('Task context/state changed while planning')
         old = get_flow(db, tid)
+        if old and reason is not None:
+            check_acceptance_edit(task, old['plan'], acceptance)
         if old and (old['goal'] != goal or needs_context_replan(db, tid)) and not reason:
             raise FlowError('Plan/context changed; use flow-replan with a concrete reason')
         unchanged = bool(old and old['goal'] == goal)
@@ -192,6 +346,105 @@ def question(store, tid, value):
     return render_board(store, tid)
 
 
+def degradation_state(store, tid):
+    """The declared repair ladder and how much of it has already been spent."""
+    task = store.task(tid)
+    policy = autonomy(task) or {}
+    ladder = list((policy.get('escalation') or {}).get('degrade_ladder') or [])
+    with store.db() as db:
+        rows = db.execute("SELECT payload FROM events WHERE task=? AND kind='flow-degraded'", (tid,)).fetchall()
+    used = {}
+    for row in rows:
+        action = json.loads(row['payload'])['action']
+        used[action] = used.get(action, 0) + 1
+    return {'task': tid, 'ladder': ladder, 'used': used,
+            'remaining': [row['action'] for row in ladder if row['action'] not in used]}
+
+
+def record_degradation(store, tid, action, reason, details=None):
+    """Apply one declared repair step; the policy's own bounds stay authoritative."""
+    task = store.task(tid)
+    policy = autonomy(task)
+    if policy is None:
+        raise FlowError('Only autonomous tasks may apply a declared degrade step')
+    ladder = (policy.get('escalation') or {}).get('degrade_ladder') or []
+    step = next((row for row in ladder if row['action'] == action), None)
+    if step is None:
+        raise FlowError('Degrade action is not declared for this task: ' + str(action))
+    if not isinstance(reason, str) or not reason.strip():
+        raise FlowError('A degrade step needs the observed blocking reason')
+    details = {} if details is None else details
+    if not isinstance(details, dict) or set(details) - set(DEGRADE_DETAILS[action]):
+        raise FlowError('Degrade details contain undeclared fields')
+    if 'max_attempts' in step and degradation_state(store, tid)['used'].get(action, 0) >= step['max_attempts']:
+        raise FlowError('Degrade action exhausted its declared attempts: ' + action)
+    if action == 'micro_batch_down':
+        if type(details.get('micro_batch')) is not int or details['micro_batch'] < step['min']:
+            raise FlowError('micro_batch must stay at or above the declared floor')
+    elif action == 'layers_down':
+        if type(details.get('layers')) is not int or details['layers'] < step['min_layers']:
+            raise FlowError('layers must stay at or above the declared floor')
+        if step.get('record_scope_gap') and not (isinstance(details.get('scope_gap'), str)
+                                                and details['scope_gap'].strip()):
+            raise FlowError('A reduced-layer proxy must record its scope gap')
+    elif action == 'recompute_on':
+        if details.get('recompute') not in step['allow']:
+            raise FlowError('recompute mode is not declared in the policy')
+    elif action == 'rebalance_parallel':
+        if not details or any(key not in step['allow'] for key in details):
+            raise FlowError('Only declared parallel dimensions may change')
+        if any(type(value) is not int or value < 1 for value in details.values()):
+            raise FlowError('Parallel dimensions must be positive integers')
+    sha = retain(store, {'kind': 'autonomy-degradation', 'context': task['context'],
+                         'actor': AUTONOMY_ACTOR, 'policy': fingerprint(policy), 'action': action,
+                         'reason': reason, 'details': details, 'recorded_at': utc()})
+    with store.db() as db:
+        store.event(db, tid, 'flow-degraded',
+                    {'action': action, 'reason': reason, 'details': details,
+                     'evidence': sha, 'actor': AUTONOMY_ACTOR})
+    render_board(store, tid)
+    return {'task': tid, 'action': action, 'evidence': sha, **degradation_state(store, tid)}
+
+
+def resolve_question(store, tid, qid, value):
+    """Let an autonomous task resolve its own escalation with a retained decision.
+
+    This is the only non-human way to close a question. The answer is attributed
+    to the Agent that made it, never presented as human guidance, and it cannot
+    change reports, reviews, gates or budgets -- it only unblocks the question.
+    """
+    task = store.task(tid)
+    policy = autonomy(task)
+    if policy is None:
+        raise FlowError('Only autonomous tasks may resolve a question without human guidance')
+    if (not isinstance(value, dict) or set(value) != {'answer', 'source', 'note'}
+            or any(not isinstance(item, str) or not item.strip() for item in value.values())):
+        raise FlowError('A resolved question needs answer, source and note')
+    with store.db() as db:
+        if not get_flow(db, tid):
+            raise FlowError('Start the collaborative flow first')
+        row = db.execute("SELECT status FROM flow_questions WHERE task=? AND id=?", (tid, qid)).fetchone()
+        if not row:
+            raise FlowError('Unknown question')
+        already = row['status'] == 'closed'
+    if already:
+        return {'question': qid, 'status': 'closed', 'changed': False, 'board': render_board(store, tid)}
+    sha = retain(store, {'kind': 'autonomy-agent-decision', 'context': task['context'],
+                         'actor': AUTONOMY_ACTOR, 'policy': fingerprint(policy), 'question': qid,
+                         'answer': value['answer'], 'source': value['source']})
+    with store.db() as db:
+        db.execute('BEGIN IMMEDIATE')
+        db.execute('INSERT OR REPLACE INTO flow_guidance VALUES(?,?,?,?,?,?)',
+                   (tid, sha, task['context'], 'applied', 'autonomy: agent decision', utc()))
+        resolution = {'guidance': sha, 'note': value['note']}
+        db.execute("UPDATE flow_questions SET status='closed',resolution=? WHERE task=? AND id=?",
+                   (json.dumps(resolution), tid, qid))
+        store.event(db, tid, 'human-question-resolved',
+                    {'id': qid, **resolution, 'actor': AUTONOMY_ACTOR})
+    return {'question': qid, 'status': 'closed', 'changed': True, 'decision': sha,
+            'board': render_board(store, tid)}
+
+
 def close_question(store, tid, qid, guidance, note):
     if not note.strip():
         raise FlowError('Question resolution needs an explanation')
@@ -223,6 +476,69 @@ def target(task):
     return 'completed' if task['spec']['mode'] != 'full' else NEXT.get(task['state'])
 
 
+def declared_profile(task):
+    """The sub-workflow this task declared, or None for the full workflow."""
+
+    declared = task['spec'].get('profile')
+    return declared['id'] if declared else None
+
+
+def check_profile(task):
+    """A declared profile must exist and agree with the task context.
+
+    Routing answers "which module set applies"; a task may only *use* one that
+    matches its own engine/model family/mode.  Selecting a profile never
+    advances a stage and never relaxes a gate.
+    """
+
+    declared = task['spec'].get('profile')
+    if not declared:
+        return None
+    from . import catalog
+    context = {key: value for key, value in (task['spec'].get('context') or {}).items()
+               if key in {'engine', 'model_family'}}
+    context['mode'] = task['spec']['mode']
+    try:
+        return catalog.resolve_profile(context, requested=declared['id'])
+    except catalog.ModuleContractError as exc:
+        raise FlowError(str(exc)) from None
+
+
+def profile_gates(task):
+    """Stage gates derived from the declared profile, or None without one."""
+
+    name = declared_profile(task)
+    if name is None:
+        return None
+    from . import catalog
+    return catalog.derived_gates(name)
+
+
+def expected_evidence(task, destination):
+    """Non-gate evidence the declared profile expects for this transition.
+
+    Advisory only: the seven stage gates stay exactly as derived, and these
+    evidence products (adaptation, qualification, profile summary, change
+    record) never block an advance on their own.
+    """
+
+    name = declared_profile(task)
+    if name is None:
+        return []
+    from . import catalog
+    stages = [stage for stage, target in NEXT.items() if target == destination]
+    if not stages:
+        return []
+    stage = stages[0]
+    entry = catalog.profile(name)
+    kinds = []
+    for module_id in entry.module_ids():
+        module = catalog.module(module_id)
+        if module.report and module.report in catalog.EVIDENCE_REPORTS and stage in module.stage:
+            kinds.append(module.report)
+    return sorted(set(kinds))
+
+
 def required_reports(task, destination):
     if destination == 'iterate':
         return []
@@ -231,7 +547,18 @@ def required_reports(task, destination):
         if task['spec']['mode'] == 'optimize':
             kinds.append('performance')
         return kinds
-    return GATES.get(destination, [])
+    kinds = list(GATES.get(destination, []))
+    derived = profile_gates(task)
+    if derived is not None and destination in derived:
+        narrowed = sorted(derived[destination])
+        if not set(narrowed) <= set(kinds):
+            # A profile may thin work, never a gate: fail loudly instead of
+            # demanding evidence the Flow does not enforce.
+            raise FlowError('Profile gate widens the Flow gate at ' + destination
+                            + ': ' + ', '.join(sorted(set(narrowed) - set(kinds))))
+        kinds = narrowed
+    # A destination the profile does not cover keeps the full gate.
+    return kinds
 
 
 def gate(store, db, task, candidate):
@@ -309,6 +636,12 @@ def next_step(store, tid):
     from .file_questions import state as question_state
     inbox = question_state(store, tid)
     task = store.task(tid)
+    if autonomy(task) is not None:
+        # No human channel: retain guidance as advisory and answer only the
+        # questions the declared policy covers. The rest stay open so this
+        # decision can halt with a retained reason instead of waiting.
+        dispose_policy(store, tid, task)
+        inbox = question_state(store, tid)
     mode = task['spec']['mode']
     stage = STAGES.get(task['state']) if mode == 'full' else 'adapt' if mode in {'environment', 'adapt'} else 'optimize' if mode in {'analyze', 'optimize'} else 'fault-tolerance'
     with store.db() as db:
@@ -316,6 +649,7 @@ def next_step(store, tid):
         if not flow:
             raise FlowError('Start the collaborative flow first')
         result = {'task': tid, 'state': task['state'], 'context': task['context'], 'goal': flow['goal'],
+                  'profile': task['spec'].get('profile'),
                   'file_questions': {'pending': inbox['pending'], 'path': inbox['path'], 'scan_error': inbox['scan_error'], 'blocking': False}}
         row = last_round(db, tid)
         if row and row['status'] == 'accepted':
@@ -338,10 +672,10 @@ def next_step(store, tid):
         if task['state'] in {'paused', 'blocked', 'failed'}:
             reasons.append('task-' + task['state'])
         if reasons:
-            return {**result, 'action': 'human', 'reasons': reasons}
+            return _stop(store, task, result, reasons)
         result['skill'] = STAGE_SKILLS[stage]
         if row and row['status'] == 'blocked' and row['goal'] == flow['goal']:
-            return {**result, 'action': 'human', 'reasons': ['review-blocked'], 'review': row['review']}
+            return _stop(store, task, result, ['review-blocked'], review=row['review'])
         if row and row['status'] in {'submitted', 'accepted'}:
             candidate = artifact_json(store, row['candidate'])
             # Reconcile a crash after the core transition committed but before advance recorded it.
@@ -351,7 +685,7 @@ def next_step(store, tid):
                 return {**result, 'action': 'repair', 'reasons': ['stale-round'], 'round': row['number']}
             else:
                 if row['failures'] >= flow['plan']['max_review_failures']:
-                    return {**result, 'action': 'human', 'reasons': ['review-failures'], 'round': row['number']}
+                    return _stop(store, task, result, ['review-failures'], round=row['number'])
                 # Reject mechanically incomplete evidence before spending an
                 # independent review, and recheck it after review as before.
                 problems = gate(store, db, task, candidate)
@@ -375,7 +709,8 @@ def next_step(store, tid):
                 break
             stalled += 1
         if len(rounds) >= flow['plan']['max_rounds'] or stalled >= flow['plan']['max_stalled_rounds']:
-            return {**result, 'action': 'human', 'reasons': ['round-budget-or-progress-plateau'], 'rounds': len(rounds), 'stalled': stalled}
+            return _stop(store, task, result, ['round-budget-or-progress-plateau'],
+                         rounds=len(rounds), stalled=stalled)
         action = 'repair' if row and row['status'] in {'revise', 'superseded'} else 'work'
         team_reasons=completion_blockers(db,tid)
         if team_reasons:
@@ -387,7 +722,9 @@ def next_step(store, tid):
         if phase:
             result['knowledge_followup'] = knowledge_followup(task, flow['goal'], phase)
         return {**result, 'action': action, 'target': target(task),
-                'required_reports': required_reports(task, target(task)), 'last_review': row['review'] if row else None,
+                'required_reports': required_reports(task, target(task)),
+                'expected_evidence': expected_evidence(task, target(task)),
+                'last_review': row['review'] if row else None,
                 'poll_seconds': flow['plan']['poll_seconds']}
 
 
@@ -476,6 +813,9 @@ def _review(store, tid, value, decision):
         raise FlowError('Review refers to a different round/goal/context')
     if not value['reviewer'].strip() or value['reviewer'] == candidate['author'] or not value['summary'].strip():
         raise FlowError('Require a separate reviewer identity and a substantive review')
+    policy = autonomy(store.task(tid))
+    if policy is not None and value['reviewer'] not in policy['reviewers']:
+        raise FlowError('Autonomous reviews must come from the declared reviewer pool')
     if value['verdict'] not in {'accept', 'revise', 'blocked'} or value['progress'] not in {'advanced', 'stalled', 'regressed'}:
         raise FlowError('Invalid review verdict/progress')
     if type(value['full_alignment']) is not bool or decision['full_alignment_required'] and not value['full_alignment']:
@@ -566,7 +906,7 @@ def guard_execution(store, tid, *, allow_parallel=False):
         decision = next_step(store, tid)
         task=store.task(tid)
         with store.db() as db: reasons=blockers(db,tid,task,flow)
-        if reasons or decision['action'] in {'human','completed','cancelled'} or decision['action']=='reconcile' and not allow_parallel:
+        if reasons or decision['action'] in {'human', 'halt', 'completed', 'cancelled'} or decision['action']=='reconcile' and not allow_parallel:
             raise FlowError('Resolve flow decision before more execution: ' + decision['action'] + ' ' + ', '.join(decision.get('reasons', [])))
 
 

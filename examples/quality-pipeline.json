@@ -1,0 +1,49 @@
+{
+  "pipeline": {
+    "schema_version": 1,
+    "name": "synthetic-quality-check",
+    "steps": [
+      {
+        "id": "quality",
+        "capability": "quality.loss",
+        "action": "compare"
+      }
+    ]
+  },
+  "context": {
+    "task_id": "synthetic-quality",
+    "context": "replace-with-current-task-context",
+    "mode": "standalone"
+  },
+  "inputs": {
+    "contract": {
+      "context": "replace-with-current-task-context",
+      "sample_fingerprint": "synthetic-samples",
+      "aggregation": "fixed-token-mean",
+      "min_steps": 3,
+      "atol": 0.01,
+      "rtol": 0,
+      "tolerance_basis": "synthetic example only"
+    },
+    "baseline": {
+      "context": "replace-with-current-task-context",
+      "sample_fingerprint": "synthetic-samples",
+      "aggregation": "fixed-token-mean",
+      "executed": 3,
+      "evidence": ["synthetic-evidence-id"],
+      "candidate_path_exercised": true,
+      "steps": [1, 2, 3],
+      "loss": [2.0, 1.9, 1.8]
+    },
+    "candidate": {
+      "context": "replace-with-current-task-context",
+      "sample_fingerprint": "synthetic-samples",
+      "aggregation": "fixed-token-mean",
+      "executed": 3,
+      "evidence": ["synthetic-evidence-id"],
+      "candidate_path_exercised": true,
+      "steps": [1, 2, 3],
+      "loss": [2.0, 1.9, 1.8]
+    }
+  }
+}

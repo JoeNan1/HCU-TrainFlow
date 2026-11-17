@@ -8,6 +8,7 @@ import sys
 import time
 
 from . import __version__
+from .command_registry import MODULAR_COMMANDS, execute_modular, register_modular_commands
 from .core import FlowError, Store, read_json, write_json
 
 
@@ -29,6 +30,13 @@ def parser():
     cmd('flow-start', 'task', 'file')
     q = cmd('flow-replan', 'task', 'file'); q.add_argument('--reason', required=True)
     cmd('flow-next', 'task')
+    q = cmd('flow-drive', 'task'); q.add_argument('--max-steps', type=int, default=50); q.add_argument('--no-advance', action='store_true')
+    q.add_argument('--worker', metavar='MODULE:FACTORY', help='Trusted caller code that supplies work/review documents')
+    q.add_argument('--max-worker-errors', type=int, default=3)
+    q = cmd('halt-list'); q.add_argument('--all', action='store_true', help='Include already delivered alerts')
+    cmd('flow-degradation', 'task')
+    q = cmd('flow-degrade', 'task', 'action'); q.add_argument('--reason', required=True); q.add_argument('--details-file')
+    cmd('budget-extend', 'task', 'file')
     cmd('flow-submit', 'task', 'file')
     cmd('flow-review', 'task', 'file')
     q = cmd('flow-review-failed', 'task', 'round'); q.add_argument('--reason', required=True)
@@ -42,6 +50,7 @@ def parser():
     q = cmd('flow-guidance-ack', 'task', 'hash'); q.add_argument('--decision', choices=['applied','queued','needs-human','not-applicable'], required=True); q.add_argument('--note', required=True)
     cmd('flow-question', 'task', 'file')
     q = cmd('flow-question-close', 'task', 'question'); q.add_argument('--guidance', required=True); q.add_argument('--note', required=True)
+    cmd('flow-question-resolve', 'task', 'question', 'file')
     cmd("artifact-add", "file")
     cmd("artifact-read", "sha", "destination")
     cmd("report-add", "task", "kind", "file")
@@ -125,11 +134,11 @@ def parser():
     q = cmd("wiki-review", "project", "stage", "decisions"); q.add_argument('--defer-workflows',metavar='REASON')
     cmd("demo", "destination")
     cmd('collaboration-demo', 'destination')
+    register_modular_commands(sub, cmd)
     return p
 
 
 def execute(a):
-    from . import admission, analysis, coordination, delivery, environment, execution, flow, monitor, quality, team, wiki, official, experience
     store = Store(a.workspace)
     c = a.command
     if c == "init": return {"workspace": str(store.root), "schema_version": 1, "version": __version__}
@@ -137,38 +146,73 @@ def execute(a):
     if c == "task-show": return store.task(a.task)
     if c == "task-context": return store.change_context(a.task, read_json(a.context_file))
     if c == "task-transition": return store.transition(a.task, a.state, a.reason)
-    if c in {'flow-start', 'flow-replan'}: return flow.start(store, a.task, read_json(a.file), getattr(a, 'reason', None))
-    if c == 'flow-next': return flow.next_step(store, a.task)
-    if c == 'flow-submit': return flow.submit(store, a.task, read_json(a.file))
-    if c == 'flow-review': return flow.review(store, a.task, read_json(a.file))
-    if c == 'flow-review-failed': return flow.review_failure(store, a.task, int(a.round), a.reason)
-    if c == 'flow-advance': return flow.advance(store, a.task)
-    if c == 'flow-guidance-ack': return flow.acknowledge(store, a.task, a.hash, a.decision, a.note)
-    if c == 'flow-question': return flow.question(store, a.task, read_json(a.file))
-    if c == 'flow-question-close': return flow.close_question(store, a.task, a.question, a.guidance, a.note)
-    if c == 'flow-status-update': return flow.status_update(store, a.task, read_json(a.file))
-    if c == 'flow-guidance-record':
-        from . import chat_guidance
-        result = chat_guidance.record(store, a.task, read_json(a.file))
-        flow.render_board(store, a.task)
-        return result
-    if c in {'flow-questions', 'flow-answer'}:
-        from . import file_questions
-        if c == 'flow-questions':
-            file_questions.scan(store, a.task, force=a.refresh)
-            return file_questions.state(store, a.task)
-        result = file_questions.answer(store, a.task, a.question, a.version, a.file_hash,
-                                       Path(a.file).read_text(encoding='utf-8-sig'), author=a.author)
-        flow.render_board(store, a.task)
-        return result
-    if c in {'flow-board', 'flow-watch'}:
+    modular_result = execute_modular(store, a)
+    if modular_result is not None:
+        return modular_result
+    # Keep the task/flow control plane usable without importing optional Wiki,
+    # TraceLens, or transport integrations.  Capability entrypoints use the
+    # same lazy-import boundary; legacy analysis/knowledge commands stay below.
+    if c == "budget-extend":
+        body = read_json(a.file)
+        if not isinstance(body, dict) or set(body) != {"operations", "seconds", "reason"}:
+            raise FlowError("budget-extend requires operations, seconds and reason")
+        return store.budget_extension(a.task, body["operations"], body["seconds"], body["reason"])
+    if c == "halt-list":
+        from . import autopilot
+        rows = autopilot.halts(store, include_delivered=a.all)
+        return {"status": "attention" if rows else "pass", "halts": rows}
+    if c in {'flow-start', 'flow-replan', 'flow-next', 'flow-drive', 'flow-submit', 'flow-review',
+             'flow-review-failed', 'flow-advance', 'flow-guidance-ack', 'flow-question',
+             'flow-question-close', 'flow-question-resolve', 'flow-status-update', 'flow-guidance-record',
+             'flow-questions', 'flow-answer', 'flow-board', 'flow-watch',
+             'flow-degradation', 'flow-degrade'}:
+        from . import flow
+        if c == 'flow-drive':
+            from . import autopilot
+            worker = autopilot.load_worker(a.worker, store, a.task) if a.worker else None
+            return autopilot.drive(store, a.task, worker=worker, max_steps=a.max_steps,
+                                   advance=not a.no_advance, max_worker_errors=a.max_worker_errors)
+        if c == 'flow-degradation':
+            return flow.degradation_state(store, a.task)
+        if c == 'flow-degrade':
+            details = read_json(a.details_file) if a.details_file else {}
+            return flow.record_degradation(store, a.task, a.action, a.reason, details)
+        if c in {'flow-start', 'flow-replan'}:
+            return flow.start(store, a.task, read_json(a.file), getattr(a, 'reason', None))
+        if c == 'flow-next': return flow.next_step(store, a.task)
+        if c == 'flow-submit': return flow.submit(store, a.task, read_json(a.file))
+        if c == 'flow-review': return flow.review(store, a.task, read_json(a.file))
+        if c == 'flow-review-failed': return flow.review_failure(store, a.task, int(a.round), a.reason)
+        if c == 'flow-advance': return flow.advance(store, a.task)
+        if c == 'flow-guidance-ack': return flow.acknowledge(store, a.task, a.hash, a.decision, a.note)
+        if c == 'flow-question': return flow.question(store, a.task, read_json(a.file))
+        if c == 'flow-question-close': return flow.close_question(store, a.task, a.question, a.guidance, a.note)
+        if c == 'flow-question-resolve': return flow.resolve_question(store, a.task, a.question, read_json(a.file))
+        if c == 'flow-status-update': return flow.status_update(store, a.task, read_json(a.file))
+        if c == 'flow-guidance-record':
+            from . import chat_guidance
+            result = chat_guidance.record(store, a.task, read_json(a.file))
+            flow.render_board(store, a.task)
+            return result
+        if c in {'flow-questions', 'flow-answer'}:
+            from . import file_questions
+            if c == 'flow-questions':
+                file_questions.scan(store, a.task, force=a.refresh)
+                return file_questions.state(store, a.task)
+            result = file_questions.answer(store, a.task, a.question, a.version, a.file_hash,
+                                           Path(a.file).read_text(encoding='utf-8-sig'), author=a.author)
+            flow.render_board(store, a.task)
+            return result
         while True:
             change = flow.sync_guidance(store, a.task, force=c == 'flow-board' or a.once)
             result = {**flow.render_board(store, a.task), **change}
             if c == 'flow-board' or a.once: return result
-            if change['new'] or change['questions_new'] or change['question_scan'].get('error'): print(json.dumps(result, ensure_ascii=False), flush=True)
-            with store.db() as db: interval = flow.get_flow(db, a.task)['plan']['poll_seconds']
+            if change['new'] or change['questions_new'] or change['question_scan'].get('error'):
+                print(json.dumps(result, ensure_ascii=False), flush=True)
+            with store.db() as db:
+                interval = flow.get_flow(db, a.task)['plan']['poll_seconds']
             time.sleep(interval)
+    from . import admission, analysis, coordination, delivery, environment, execution, flow, monitor, quality, team, wiki, official, experience
     if c == "artifact-add": return {"artifact": store.put(Path(a.file).read_bytes()), "visibility": "private"}
     if c == "artifact-read":
         from .core import atomic_write
@@ -324,6 +368,12 @@ def main(argv=None):
         result = execute(args)
         print(json.dumps(result, ensure_ascii=False, allow_nan=False, indent=2))
         status = result.get("status") if isinstance(result, dict) else None
+        if args.command in MODULAR_COMMANDS and status in {"blocked", "conflicted", "interrupted"}:
+            return 2
+        # A halted autonomous run stopped without a human decision; it is not a
+        # successful completion even though the Flow state is consistent.
+        if status in {"halt", "halted"}:
+            return 2
         return 2 if status in {"fail", "failed", "incomplete", "partial", "rejected", "unknown", "attention", "needs-agent-review"} else 0
     except KeyboardInterrupt:
         return 130

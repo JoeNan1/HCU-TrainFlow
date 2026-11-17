@@ -1,0 +1,52 @@
+{
+  "context": "replace-with-current-context",
+  "action": "assess",
+  "inputs": {
+    "contract": {
+      "context": "replace-with-current-context",
+      "sample_fingerprint": "synthetic-example",
+      "aggregation": "fixed-sample-mean",
+      "initial_state_fingerprint": "synthetic-state",
+      "training_recipe_fingerprint": "synthetic-recipe",
+      "min_steps": 3,
+      "atol": 0.01,
+      "rtol": 0,
+      "tolerance_basis": "Synthetic example only; replace with justified site contract"
+    },
+    "baseline": {
+      "context": "replace-with-current-context",
+      "sample_fingerprint": "synthetic-example",
+      "aggregation": "fixed-sample-mean",
+      "initial_state_fingerprint": "synthetic-state",
+      "training_recipe_fingerprint": "synthetic-recipe",
+      "steps": [1, 2, 3],
+      "loss": [2.0, 1.9, 1.8],
+      "executed": 3,
+      "evidence": ["replace-with-retained-baseline-artifact-id"]
+    },
+    "candidate": {
+      "context": "replace-with-current-context",
+      "sample_fingerprint": "synthetic-example",
+      "aggregation": "fixed-sample-mean",
+      "initial_state_fingerprint": "synthetic-state",
+      "training_recipe_fingerprint": "synthetic-recipe",
+      "steps": [1, 2, 3],
+      "loss": [2.0, 1.9, 1.8],
+      "executed": 3,
+      "candidate_path_exercised": true,
+      "evidence": ["replace-with-retained-candidate-artifact-id"]
+    },
+    "correctness": {
+      "context": "replace-with-current-context",
+      "executed": 3,
+      "failures": 0,
+      "candidate_path_exercised": true,
+      "profiler_off": true,
+      "measurement_protocol": {"max_relative_mad": 0.05},
+      "evidence": ["replace-with-retained-comparison-artifact-id"]
+    },
+    "baseline_times": [10.0, 10.1, 9.9],
+    "candidate_times": [9.0, 9.1, 8.9],
+    "max_regression": 0
+  }
+}

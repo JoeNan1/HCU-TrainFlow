@@ -1,0 +1,24 @@
+{
+  "context": "replace-with-current-context",
+  "action": "check",
+  "inputs": {
+    "contract": {
+      "context": "replace-with-current-context",
+      "required": [
+        {"node": "node-a", "device": 0, "check": "runtime-ready", "conditions": {"runtime": "verified-site-version"}}
+      ]
+    },
+    "observations": [
+      {
+        "node": "node-a",
+        "device": 0,
+        "check": "runtime-ready",
+        "conditions": {"runtime": "verified-site-version"},
+        "context": "replace-with-current-context",
+        "status": "pass",
+        "executed": 1,
+        "evidence": ["replace-with-retained-raw-output-artifact-id"]
+      }
+    ]
+  }
+}

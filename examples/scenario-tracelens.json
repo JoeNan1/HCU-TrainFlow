@@ -1,0 +1,10 @@
+{
+  "context": "replace-with-current-context",
+  "action": "analyze",
+  "inputs": {
+    "project": ".",
+    "trace": "examples/tracelens-trace.json",
+    "rank": 0,
+    "timeout": 120
+  }
+}
