@@ -48,6 +48,10 @@ description: 统一编排 HCU 大模型训练适配、性能优化、大规模�
 | `halt` | 自主任务（`spec.autonomy`）在此停止，原因与证据已留存，不等待人。判定自带 `options`：可用降级动作、剩余预算额度、可自决问题与必须升级的类别，按菜单处置即可。自己能决定的用 `flow-question-resolve`/`flow-degrade`/`budget-extend` 留痕后继续；需要新授权、输入或方向时另起任务或 `flow-replan`。不得放宽门槛、复用旧复核或突破硬顶继续推进。 |
 | `completed` / `cancelled` | 给出自包含的结果、证据、未解决限制和交付位置；未满足请求不能自行宣告完成。 |
 
+每轮先把状态读回来：`flow-brief TASK` 给出目标与验收指纹、门禁、候选快照、可用证据、未决问题与预算剩余，`flow-submit`/`report-add` 带上它的 `brief_hash`。会话被压缩、换会话或换主控之后必须重新取 brief，不要用上一轮的叙述重建当前状态；状态变了会返回 `stale-brief`，自主任务不带哈希会返回 `unverified-turn`。阶段边界跑 `flow-align`，把目标、验收、profile 与当前阶段和存储的 plan 对一遍，有 delta 就 `flow-replan` 留理由。
+
+报告里的数字写进 `claims`：`{id, statement, stage?, value?, source: {artifact, path}}` 指向原件，`report-verify TASK KIND` 可事后重跑校验。程序只判引用、数值、流程、范围四类机械问题，指向不了原件的结论只能写 incomplete；不要用文字复述替代可核对的数值。
+
 review 按 `docs/collaboration.md`“工作与审核的粒度”使用完整字段；一个候选可包含多次有界初筛，不逐次试参安排 RLCR。每隔配置轮次及扩容/长训/结束边界做全目标检查，不将全目标检查解释为全量重测。局部失败先按已有预算诊断/回退；持续数值退化、无收益平台期、反复工具失败再携最小证据包升级。非阻塞改进记 followup，不挡实际工作。
 
 环境/模型/扩容出现可信性能差距时，主控按项目 `docs/environment-discovery.md` 第 6 节派发基本排查与有界尝试，不能接受只有差距表的“完成”报告。复核原件口径、链路/库版本和 HCU 知识/源码后，在已有授权与资源准入范围内自主推进可逆对照；核验正确性、生效路径、回归与回退。`environment-check` 的 `follow_up_required` 或 `performance_discrepancy` 进入当前 flow/经验记录；条件未知不是忽略理由，未解决保持 fail/incomplete。分析-only 或实际权限不足时保留待执行项，报告已排除项与具体所需权限，不能虚构实验或扩大站点改动范围。

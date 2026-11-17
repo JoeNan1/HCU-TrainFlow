@@ -614,3 +614,14 @@ HCU-Knowledge阶段已提交3829ef06、tag v0.5.6，两远端核对current且工
 - 生成器 `scripts/build_autonomous_task.py` 的 `TASK_KEYS` 增加 `profile`，自主任务也能声明子工作流。
 - 文档：`contracts.md`（TaskSpec.profile）、`collaboration.md`（required_reports 与 expected_evidence）、`workflow-modules.md` §9/§11/§14、`autonomous-task.md`（可选 profile）。
 - 验证：新增 9 项回归；全量 **1587 passed / 3 skipped**（507.57 秒）；受影响子集 147 项通过；文档 208 页 / 106 CLI 示例 / 44 JSON 示例 0 issues；Skill 资源 current；本机安装同步并独立 `--check` current；CLI 冒烟确认 `flow-next` 返回 profile、门禁 `environment` 与适配 `expected_evidence`。
+
+## 2026-11-17：抗幻觉/抗漂移加固（先度量，再改）
+
+- **先做度量**：`tests/test_integrity_guardrails.py` 用真实 Store 回放 7 类注入故障——借用他任务证据、跳过阶段的结论、超范围快照、数值改一位、profile 任务无 claims 的 pass、缺 brief、自主任务缺 turn 锚定。改前 **0/7 被拦**（全部静默通过），改后 **7/7**。
+- **证据归属**：`Store.artifact_tasks()` 从 events / pipeline_steps / operations 归因；`report-add` 拒绝只属于其他任务的私有对象，`public` 对象仍可作共享基线（跨任务共用不误伤）。登记报告时写 `artifact-claimed` 事件，为下一次借用留下可查记录。
+- **claims**：报告新增封闭字段 `claims`，机械校验四类——引用（对象存在且归属本任务）、数值（按 `source.path` 取原值比对，1e-9 相对容差，布尔不与数字互通）、流程（`stage` 必须在 profile 覆盖范围内）、范围（`candidate_snapshot` 必须与报告一致）。profile 任务的 Agent 撰写 pass 报告**必须**带 claims；capability/Pipeline 自算报告（`agent_authored=false`）不强制，但写出的 claims 照旧校验。`report-verify TASK KIND` 可事后重跑，不改状态。
+- **状态锚点**：`flow-brief` 由 Store 拼装一页摘要（目标/验收指纹、`invariants`、candidate 快照、可用证据、未决问题、预算与降级剩余、最近事件、阅读入口）并返回 `brief_hash`；`--notes` 只作附注，不参与任何判定。`flow-submit`/`report-add` 带 `--brief-hash` 绑定状态，过期即 `stale-brief`；自主任务提交缺哈希为 `unverified-turn`，`autopilot.drive` 每轮重新取哈希后再提交。
+- **漂移对账**：`flow-next` 每次重发 `invariants`（门禁、acceptance_edit 策略、预算硬顶、review 必需），不复用会话里的旧值；`flow-align` 对照存储 plan 输出 delta（验收/目标自起始改变、profile 与 context 不再匹配、阶段超出 profile、门禁被放宽），有 delta 记 `flow-aligned` 事件并要求 `flow-replan` 留理由。
+- **交接协议**：`agent-send` 的 handoff 必须带 `{brief_hash, evidence_ids, open_questions}`，`evidence_ids ⊆ evidence`，用状态而不是叙述交接。
+- 文档：`contracts.md`（ReportEnvelope.claims、StateBrief 与 turn 绑定）、`collaboration.md`（命令表 + 每轮的状态锚点）、`workflow-modules.md` §10 护栏表 +5 行、协调器 `SKILL.md`（每轮先读 brief、数字写 claims）。
+- 验证：新增 23 项回归；全量 **1610 passed / 3 skipped**（516.22 秒）；`validate_knowledge` 22185 页 / 24 来源 / 0 errors；文档 208 页 / 107 CLI 示例 / 44 JSON 示例 0 issues；Skill 资源 current；本机安装同步后独立 `--check` current。

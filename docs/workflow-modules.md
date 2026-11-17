@@ -277,6 +277,11 @@ hcu-trainflow --workspace /private/task/store module-run /private/task/modules.j
 | 门禁被顺手放宽 | `llm-megatron` 派生 == `flow.GATES`；profile 派生 ⊆ 全量且 `missing_producers` 为空；`required_reports` 对 profile 未覆盖的阶段回落全量门禁，派生更宽直接报错 |
 | 优化/适配模块把"判断"伪装成"计算" | 19–21、22–24 只产证据，`limits` 与 `stage_equivalent` 字段显式声明边界 |
 | 契约与实现漂移 | 每个模块都映射到已注册 capability/action，测试逐项核对 |
+| 借用别的任务的证据 | `report-add` 校验被引对象归属，只属于其他任务即拒绝（`tests/test_integrity_guardrails.py`） |
+| 报告正文的数字与原件不符 | `claims` 逐条解析 `source.path` 并与 `value` 比对；profile 任务的 pass 必须带 claims |
+| 上下文被压缩后约束消失 | `flow-next`/`flow-brief` 每次从存储重新下发 `invariants`；agent 的 `--notes` 不参与判定 |
+| 凭记忆推进（换会话/长跑） | `--brief-hash` 绑定状态，过期即 `stale-brief`；自主任务缺哈希为 `unverified-turn` |
+| 目标被悄悄改写 | `flow-align` 对照存储 plan 列出 delta，有 delta 必须 `flow-replan` 留理由 |
 
 ## 11. 批次与验收
 

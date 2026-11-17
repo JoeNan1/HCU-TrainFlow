@@ -53,13 +53,16 @@
 | 命令 | 作用 |
 | --- | --- |
 | `flow-start TASK PLAN` | 固定验收目标和循环预算，初始化人的文件与看板 |
-| `flow-next TASK` | 返回 work/repair/coordinate/review/advance/reconcile/human 或自主任务的 halt，以及 completed/cancelled |
+| `flow-next TASK` | 返回 work/repair/coordinate/review/advance/reconcile/human 或自主任务的 halt，以及 completed/cancelled；每次带 `invariants`（门禁、验收边界、预算硬顶） |
+| `flow-brief TASK [--notes FILE]` | 由存储拼装当前状态的一页摘要与 `brief_hash`；换会话、长任务每轮开始都先取一次，`--notes` 只作附注 |
+| `flow-align TASK` | 从存储的 plan 重新导出目标/验收/profile/阶段，列出 delta；有漂移即 `drift`，需 `flow-replan` 记理由 |
+| `report-verify TASK KIND` | 对已登记报告重跑引用/数值/流程/范围四类校验，列出问题且不改状态 |
 | `flow-drive TASK [--max-steps N] [--no-advance]` | 自主任务的有界驱动：自动执行 `advance`，把 work/repair/review 交给调用方，遇到 `halt` 记录原因后停止 |
 | `flow-degradation TASK` | 查看自主任务已声明的降级阶梯、已用次数与剩余可执行项 |
 | `flow-degrade TASK ACTION --reason TEXT [--details-file FILE]` | 按策略边界应用一级降级（微批、重算、并行维度、层数、checkpoint 恢复）并留存证据 |
 | `budget-extend TASK FILE` | 在策略允许的额度内追加执行预算；FILE 含 operations/seconds/reason，超过硬顶或次数上限即拒绝 |
 | `halt-list [--all]` | 列出排队中的自主停机告警（有未处理项时退出码 2），供无人值守监控消费 |
-| `flow-submit TASK CANDIDATE` | 留存不可变候选并请求独立复核 |
+| `flow-submit TASK CANDIDATE [--brief-hash H]` | 留存不可变候选并请求独立复核；带 H 时状态已变即 `stale-brief`，自主任务缺 H 为 `unverified-turn` |
 | `flow-review TASK REVIEW` | 校验结构、上下文、身份区分、目标覆盖及发现 |
 | `flow-review-failed TASK ROUND --reason TEXT` | 记录 reviewer 超时、无法解析或未输出等失败 |
 | `flow-advance TASK` | 复核与证据均符合当前阶段才推进 |
@@ -76,6 +79,16 @@
 | `flow-question-resolve TASK ID FILE` | 仅自主任务：以 Agent 自己的决议（answer/source/note）关闭问题，归因为 `autonomy-policy`，不冒充人的回答 |
 
 `flow-next` 的 action 必须检查，命令退出 0 不意味着任务已经完成。`human` 是需要处理新指导或专家判断，不是强制每阶段找人审批。正常 review 由独立 Agent 完成。未配置独立 reviewer 时需要如实登记，不能让实施者改个名字假装独立。
+
+### 每轮的状态锚点
+
+长任务里模型更容易"记错现在在哪"，而不是算错。三个锚点把这件事变成可校验的：
+
+- **读**：会话开始、上下文被压缩后、换人接手时，先 `flow-brief` 取当前状态，不要用上一轮的叙述重建。brief 由存储拼装，摘要里写的内容不改变门禁、报告要求或预算。
+- **绑**：`flow-submit`/`report-add` 带 `--brief-hash`，动作与它依据的那版状态绑定；状态变了返回 `stale-brief`，自主任务不带哈希则是 `unverified-turn`。这相当于把乐观并发控制用在任务状态上。
+- **对**：阶段边界跑 `flow-align`，把目标、验收、profile、阶段与存储的 plan 对一遍；有 delta 就走 `flow-replan` 留理由，不允许悄悄换目标。
+
+报告里的数字走 `claims`：能指向原件就指向原件，指向不了就只能写 `incomplete`。程序只做机械判定（引用、数值、流程、范围），"这个实验是不是最好的实验"仍由独立复核判断，不用 LLM 打分替代。
 
 ### 自主模式（无人工通道）
 
