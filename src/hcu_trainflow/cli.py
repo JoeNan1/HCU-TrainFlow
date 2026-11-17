@@ -30,6 +30,8 @@ def parser():
     cmd('flow-start', 'task', 'file')
     q = cmd('flow-replan', 'task', 'file'); q.add_argument('--reason', required=True)
     cmd('flow-next', 'task')
+    q = cmd('flow-brief', 'task'); q.add_argument('--notes', metavar='FILE', help='Advisory notes kept beside the digest; they never change a gate')
+    cmd('flow-align', 'task')
     q = cmd('flow-drive', 'task'); q.add_argument('--max-steps', type=int, default=50); q.add_argument('--no-advance', action='store_true')
     q.add_argument('--worker', metavar='MODULE:FACTORY', help='Trusted caller code that supplies work/review documents')
     q.add_argument('--max-worker-errors', type=int, default=3)
@@ -37,7 +39,7 @@ def parser():
     cmd('flow-degradation', 'task')
     q = cmd('flow-degrade', 'task', 'action'); q.add_argument('--reason', required=True); q.add_argument('--details-file')
     cmd('budget-extend', 'task', 'file')
-    cmd('flow-submit', 'task', 'file')
+    q = cmd('flow-submit', 'task', 'file'); q.add_argument('--brief-hash', help='flow-brief hash this candidate was written against')
     cmd('flow-review', 'task', 'file')
     q = cmd('flow-review-failed', 'task', 'round'); q.add_argument('--reason', required=True)
     cmd('flow-advance', 'task')
@@ -53,7 +55,8 @@ def parser():
     cmd('flow-question-resolve', 'task', 'question', 'file')
     cmd("artifact-add", "file")
     cmd("artifact-read", "sha", "destination")
-    cmd("report-add", "task", "kind", "file")
+    q = cmd("report-add", "task", "kind", "file"); q.add_argument("--brief-hash", help="flow-brief hash this report was written against")
+    cmd("report-verify", "task", "kind")
     q = cmd("lease-acquire", "resource", "owner"); q.add_argument("--ttl", type=float, default=300)
     q = cmd("lease-renew", "file"); q.add_argument("--ttl", type=float, default=300)
     cmd("lease-release", "file")
@@ -161,7 +164,7 @@ def execute(a):
         from . import autopilot
         rows = autopilot.halts(store, include_delivered=a.all)
         return {"status": "attention" if rows else "pass", "halts": rows}
-    if c in {'flow-start', 'flow-replan', 'flow-next', 'flow-drive', 'flow-submit', 'flow-review',
+    if c in {'flow-start', 'flow-replan', 'flow-next', 'flow-brief', 'flow-align', 'flow-drive', 'flow-submit', 'flow-review',
              'flow-review-failed', 'flow-advance', 'flow-guidance-ack', 'flow-question',
              'flow-question-close', 'flow-question-resolve', 'flow-status-update', 'flow-guidance-record',
              'flow-questions', 'flow-answer', 'flow-board', 'flow-watch',
@@ -180,7 +183,15 @@ def execute(a):
         if c in {'flow-start', 'flow-replan'}:
             return flow.start(store, a.task, read_json(a.file), getattr(a, 'reason', None))
         if c == 'flow-next': return flow.next_step(store, a.task)
-        if c == 'flow-submit': return flow.submit(store, a.task, read_json(a.file))
+        if c == 'flow-align': return flow.align(store, a.task)
+        if c == 'flow-brief':
+            notes = read_json(a.notes) if a.notes else None
+            if notes is not None and not isinstance(notes, (dict, list)):
+                raise FlowError('flow-brief notes must be a JSON object or list')
+            return flow.brief(store, a.task, notes=notes)
+        if c == 'flow-submit':
+            return flow.submit(store, a.task, read_json(a.file),
+                               brief_hash=getattr(a, 'brief_hash', None))
         if c == 'flow-review': return flow.review(store, a.task, read_json(a.file))
         if c == 'flow-review-failed': return flow.review_failure(store, a.task, int(a.round), a.reason)
         if c == 'flow-advance': return flow.advance(store, a.task)
@@ -218,7 +229,15 @@ def execute(a):
         from .core import atomic_write
         if Path(a.destination).exists(): raise FlowError("Destination exists")
         atomic_write(a.destination, store.artifact(a.sha)); return {"destination": a.destination}
-    if c == "report-add": return store.report(a.task, a.kind, read_json(a.file))
+    if c == "report-add":
+        bound = getattr(a, "brief_hash", None)
+        if bound:
+            from . import flow
+            flow.verify_brief(store, a.task, bound)
+        return store.report(a.task, a.kind, read_json(a.file))
+    if c == "report-verify":
+        from . import integrity
+        return integrity.verify(store, a.task, a.kind)
     if c == "lease-acquire": return store.lease(a.resource, a.owner, a.ttl)
     if c == "lease-renew": return store.renew(read_json(a.file), a.ttl)
     if c == "lease-release": return store.release(read_json(a.file))

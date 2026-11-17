@@ -157,7 +157,11 @@ def drive(store, tid, *, worker=None, max_steps=50, advance=True, max_worker_err
                              extra={'steps': steps, 'advanced': advanced, 'worker': stats})
             try:
                 if method == 'work':
-                    outcome = flow.submit(store, tid, document)
+                    # Anchor the submit to the state the decision came from: the
+                    # driver re-reads the brief each turn instead of trusting
+                    # whatever it still remembers about this run.
+                    outcome = flow.submit(store, tid, document,
+                                          brief_hash=flow.brief_token(store, tid))
                     stats['submits'] += 1
                     # A worker that keeps shipping a gate-rejected candidate must
                     # not burn the whole step budget: stop when it does not converge.

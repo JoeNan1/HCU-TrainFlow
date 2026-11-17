@@ -372,12 +372,22 @@ def endpoint(db,tid,aid,owner=None):
 
 def send(store,tid,value):
     required={'id','sender','recipient','owner','kind','body','context','evidence'}
-    if required-value.keys() or set(value)-required-{'reply_to','blocking'}:raise FlowError('Invalid agent message fields')
+    if required-value.keys() or set(value)-required-{'reply_to','blocking','handoff'}:raise FlowError('Invalid agent message fields')
     safe_id(value['id'])
     if value['kind'] not in {'question','answer','finding','blocker','handoff'} or not isinstance(value['body'],str) or not value['body'].strip():raise FlowError('Message needs kind and substantive body')
     if value['sender']==value['recipient']:raise FlowError('Choose another recipient')
     if not isinstance(value['evidence'],list):raise FlowError('Evidence must be an artifact list')
     for sha in value['evidence']:store.artifact(sha)
+    if value['kind']=='handoff':
+        # A handoff carries state, not a story: the receiver re-reads the same
+        # brief and refuses to continue from a picture that has moved on.
+        handoff=value.get('handoff')
+        if not isinstance(handoff,dict) or set(handoff)!={'brief_hash','evidence_ids','open_questions'}:raise FlowError('Handoff needs brief_hash, evidence_ids and open_questions')
+        if not isinstance(handoff['brief_hash'],str) or len(handoff['brief_hash'])!=64:raise FlowError('Handoff needs the flow-brief hash it was written from')
+        if not isinstance(handoff['evidence_ids'],list) or not set(handoff['evidence_ids'])<=set(value['evidence']):raise FlowError('Handoff evidence must be a subset of the cited evidence')
+        if not isinstance(handoff['open_questions'],list) or any(not isinstance(item,str) or not item.strip() for item in handoff['open_questions']):raise FlowError('Handoff open_questions must be non-empty text lines or an empty list')
+    elif 'handoff' in value:
+        raise FlowError('Only a handoff carries a handoff block')
     message={'blocking':value['kind']=='blocker','reply_to':None,**value}
     if type(message['blocking']) is not bool or value['kind']=='blocker' and not message['blocking']:raise FlowError('Blocker must be marked blocking')
     with store.db() as db:

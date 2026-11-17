@@ -69,6 +69,12 @@ def candidate(store, task_id="t", label="candidate-1", reports=True):
             "evidence": [proof]}
 
 
+def send(store, value, task_id="t"):
+    """Submit the way an autonomous run must: anchored to the current brief."""
+
+    return flow.submit(store, task_id, value, brief_hash=flow.brief_token(store, task_id))
+
+
 def verdict(store, task_id="t", reviewer="agent:reviewer-1", **changes):
     decision = flow.next_step(store, task_id)
     item = flow.artifact_json(store, decision["candidate"])
@@ -207,7 +213,7 @@ def test_question_resolution_requires_an_autonomous_policy(tmp_path):
 
 def test_review_must_come_from_the_declared_pool(tmp_path):
     store = setup(tmp_path)
-    flow.submit(store, "t", candidate(store))
+    send(store, candidate(store))
     with pytest.raises(FlowError, match="declared reviewer pool"):
         flow.review(store, "t", verdict(store, reviewer="agent:stranger"))
     # The declared reviewer is still accepted afterwards on the same round.
@@ -217,7 +223,7 @@ def test_review_must_come_from_the_declared_pool(tmp_path):
 
 def test_review_failure_budget_halts_instead_of_waiting(tmp_path):
     store = setup(tmp_path, max_review_failures=1)
-    flow.submit(store, "t", candidate(store))
+    send(store, candidate(store))
     with pytest.raises(FlowError):
         flow.review(store, "t", {})
 
@@ -227,7 +233,7 @@ def test_review_failure_budget_halts_instead_of_waiting(tmp_path):
 
 def test_round_budget_halts_after_the_declared_budget(tmp_path):
     store = setup(tmp_path, max_rounds=1)
-    flow.submit(store, "t", candidate(store))
+    send(store, candidate(store))
     flow.review(store, "t", verdict(store))
     decision = flow.next_step(store, "t")
     while decision["action"] == "advance":
@@ -239,7 +245,7 @@ def test_round_budget_halts_after_the_declared_budget(tmp_path):
 
 def test_halted_autonomous_task_cannot_keep_executing(tmp_path):
     store = setup(tmp_path, max_review_failures=1)
-    flow.submit(store, "t", candidate(store))
+    send(store, candidate(store))
     with pytest.raises(FlowError):
         flow.review(store, "t", {})
     assert flow.next_step(store, "t")["action"] == "halt"
@@ -249,7 +255,7 @@ def test_halted_autonomous_task_cannot_keep_executing(tmp_path):
 
 def test_autonomy_cannot_pass_a_missing_report(tmp_path):
     store = setup(tmp_path)
-    result = flow.submit(store, "t", candidate(store, reports=False))
+    result = send(store, candidate(store, reports=False))
     assert result["status"] == "needs-repair"
     assert any("missing-or-replaced-report:environment" in reason for reason in result["reasons"])
     assert flow.next_step(store, "t")["action"] == "repair"
@@ -257,7 +263,7 @@ def test_autonomy_cannot_pass_a_missing_report(tmp_path):
 
 def test_drive_advances_an_accepted_round_without_a_person(tmp_path):
     store = setup(tmp_path)
-    flow.submit(store, "t", candidate(store))
+    send(store, candidate(store))
     flow.review(store, "t", verdict(store))
 
     result = autopilot.drive(store, "t")

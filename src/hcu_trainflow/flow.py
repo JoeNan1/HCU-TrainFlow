@@ -561,6 +561,176 @@ def required_reports(task, destination):
     return kinds
 
 
+def invariants(task):
+    """Constraints re-derived on every read, so a summary cannot narrow them.
+
+    This is the answer to compaction: the gates, the acceptance boundary and
+    the budget ceiling are recomputed from the store each time instead of
+    being recalled from a conversation that may have lost them.
+    """
+
+    derived = profile_gates(task)
+    gates = derived if derived is not None else {stage: list(kinds) for stage, kinds in GATES.items()}
+    policy = autonomy(task) or {}
+    escalation = policy.get('escalation') or {}
+    return {
+        'gates': {stage: sorted(set(kinds)) for stage, kinds in sorted(gates.items())},
+        'acceptance_edit': escalation.get('acceptance_edit', 'forbid'),
+        'budget': task['spec'].get('budget') or {},
+        'profile': declared_profile(task),
+        'autonomous': autonomy(task) is not None,
+        'review_required': True,
+        'stage_skills': sorted(set(STAGE_SKILLS.values())),
+    }
+
+
+def brief_state(store, tid):
+    """The digest of everything a fresh session needs, assembled by the store.
+
+    Read-only and cheap: no guidance scan, no round reconciliation, no event.
+    ``brief`` adds the current decision on top; the hash binds a later write to
+    exactly this state so an action taken on a stale picture fails loudly.
+    """
+
+    task = store.task(tid)
+    destination = target(task)
+    with store.db() as db:
+        row = get_flow(db, tid)
+        if not row:
+            raise FlowError('Start the collaborative flow first')
+        plan = row['plan']
+        last = db.execute('SELECT * FROM flow_rounds WHERE task=? ORDER BY number DESC LIMIT 1',
+                          (tid,)).fetchone()
+        reports = store.current_reports(db, tid, task['context'])
+        questions = [json.loads(item['payload']) for item in db.execute(
+            "SELECT payload FROM flow_questions WHERE task=? AND status='open'", (tid,))]
+        evidence = [item[0] for item in db.execute(
+            "SELECT json_extract(payload,'$.artifact') FROM events WHERE task=?"
+            " AND kind IN ('artifact-claimed','report-recorded')"
+            " AND json_extract(payload,'$.artifact') IS NOT NULL"
+            " ORDER BY seq DESC LIMIT 12", (tid,))]
+        recent = [{'seq': item['seq'], 'kind': item['kind']} for item in db.execute(
+            'SELECT seq,kind FROM events WHERE task=? ORDER BY seq DESC LIMIT 8', (tid,))]
+        extensions = db.execute('SELECT COUNT(*) FROM budget_extensions WHERE task=?',
+                                (tid,)).fetchone()[0]
+    acceptance = plan.get('acceptance') or {}
+    candidate = None
+    if last is not None and last['candidate']:
+        candidate = {'round': last['number'], 'status': last['status'],
+                     'snapshot': artifact_json(store, last['candidate']).get('snapshot')}
+    state = degradation_state(store, tid)
+    return {
+        'task': tid,
+        'state': task['state'],
+        'revision': task['revision'],
+        'context': task['context'],
+        'objective': plan.get('objective') or task['spec'].get('objective'),
+        'acceptance': {'fingerprint': fingerprint(acceptance), 'clauses': acceptance},
+        'profile': task['spec'].get('profile'),
+        'autonomous': autonomy(task) is not None,
+        'target': destination,
+        'required_reports': required_reports(task, destination),
+        'expected_evidence': expected_evidence(task, destination),
+        'invariants': invariants(task),
+        'candidate': candidate,
+        'reports': sorted(reports),
+        'evidence': [sha for sha in evidence if sha],
+        'open_questions': [{'id': q['id'], 'title': q['title'], 'blocking': q['blocking']}
+                           for q in questions],
+        'budget': {'spec': task['spec'].get('budget') or {}, 'extensions': extensions},
+        'degradation': {'ladder': state['ladder'], 'used': state['used']},
+        'recent_events': recent,
+    }
+
+
+def brief_token(store, tid):
+    """Fingerprint of the current state; a write may be bound to it."""
+
+    return fingerprint(brief_state(store, tid))
+
+
+def verify_brief(store, tid, expected):
+    if not isinstance(expected, str) or len(expected) != 64:
+        raise FlowError('brief-hash must be the hash returned by flow-brief')
+    current = brief_token(store, tid)
+    if expected != current:
+        raise FlowError('stale-brief: the task state changed since that brief; take a new one')
+    return current
+
+
+def brief(store, tid, notes=None):
+    """One page a fresh session can resume from; nothing here trusts a summary."""
+
+    body = brief_state(store, tid)
+    decision = next_step(store, tid)
+    stage = STAGES.get(body['state'], 'adapt')
+    skill = decision.get('skill') or STAGE_SKILLS.get(stage)
+    return {**body,
+            'action': decision.get('action'),
+            'skill': skill,
+            'reasons': decision.get('reasons', []),
+            'options': decision.get('options'),
+            'reads': ['docs/skill-reading-map.md', 'skills/' + skill + '/SKILL.md'],
+            'notes': notes or [],
+            'brief_hash': fingerprint(body)}
+
+
+def align(store, tid):
+    """Re-derive what this task is for and report every delta.
+
+    This does not judge the work. It makes drift visible on a stage boundary:
+    a changed objective or acceptance, a profile that no longer matches the
+    context, or a stage the profile never planned has to be settled with
+    ``flow-replan`` and a reason instead of sliding in unnoticed.
+    """
+
+    task = store.task(tid)
+    with store.db() as db:
+        row = get_flow(db, tid)
+        if not row:
+            raise FlowError('Start the collaborative flow first')
+        first = db.execute("SELECT payload FROM events WHERE task=? AND kind='flow-started'"
+                           " ORDER BY seq LIMIT 1", (tid,)).fetchone()
+    deltas = []
+    plan = row['plan']
+    acceptance = plan.get('acceptance') or {}
+    profile = declared_profile(task)
+    if profile is not None:
+        try:
+            check_profile(task)
+        except FlowError as exc:
+            deltas.append({'kind': 'profile-context-mismatch', 'detail': str(exc)})
+        from .catalog.profiles import profile as profile_entry
+        if task['state'] in STAGES and task['state'] not in profile_entry(profile).stages:
+            deltas.append({'kind': 'stage-outside-profile', 'detail': task['state']})
+    try:
+        for stage in GATES:
+            required_reports(task, stage)
+    except FlowError as exc:
+        deltas.append({'kind': 'gate-widened', 'detail': str(exc)})
+    if first:
+        original = artifact_json(store, json.loads(first['payload'])['goal'])
+        started = (original.get('plan') or {}).get('acceptance') or {}
+        if fingerprint(started) != fingerprint(acceptance):
+            deltas.append({'kind': 'acceptance-changed-since-start',
+                           'from': fingerprint(started), 'to': fingerprint(acceptance),
+                           'action': 'flow-replan'})
+        if original.get('objective') != (plan.get('objective') or task['spec'].get('objective')):
+            deltas.append({'kind': 'objective-changed-since-start',
+                           'from': original.get('objective'),
+                           'to': plan.get('objective') or task['spec'].get('objective'),
+                           'action': 'flow-replan'})
+    result = {'task': tid, 'state': task['state'], 'profile': profile,
+              'status': 'drift' if deltas else 'aligned',
+              'deltas': deltas, 'next': 'flow-replan' if deltas else 'continue',
+              'acceptance': fingerprint(acceptance),
+              'gates': invariants(task)['gates']}
+    if deltas:
+        with store.db() as db:
+            store.event(db, tid, 'flow-aligned', {'deltas': deltas, 'state': task['state']})
+    return result
+
+
 def gate(store, db, task, candidate):
     """Reports are current and belong to this exact candidate; LLM verdict cannot waive them."""
     from .team import completion_blockers
@@ -650,6 +820,7 @@ def next_step(store, tid):
             raise FlowError('Start the collaborative flow first')
         result = {'task': tid, 'state': task['state'], 'context': task['context'], 'goal': flow['goal'],
                   'profile': task['spec'].get('profile'),
+                  'invariants': invariants(task),
                   'file_questions': {'pending': inbox['pending'], 'path': inbox['path'], 'scan_error': inbox['scan_error'], 'blocking': False}}
         row = last_round(db, tid)
         if row and row['status'] == 'accepted':
@@ -728,7 +899,15 @@ def next_step(store, tid):
                 'poll_seconds': flow['plan']['poll_seconds']}
 
 
-def submit(store, tid, candidate):
+def submit(store, tid, candidate, *, brief_hash=None):
+    task = store.task(tid)
+    if brief_hash is None:
+        if autonomy(task) is not None:
+            # No human channel: the turn must be anchored to a state the agent
+            # actually re-read, otherwise a long run drifts off a stale picture.
+            raise FlowError('unverified-turn: take flow-brief and pass its brief_hash before submitting')
+    else:
+        verify_brief(store, tid, brief_hash)
     decision = next_step(store, tid)
     if decision['action'] not in {'work', 'repair'}:
         raise FlowError('Resolve the current flow decision before submitting another candidate')
