@@ -67,6 +67,28 @@ python scripts/setup_trainflow.py --knowledge-root "D:/my-knowledge/HCU-Knowledg
 
 HCU-Knowledge 贯穿环境适配、性能优化和扩 DP/容错，按问题查询；必需安装不意味着每一步都要重复搜索。安装两个知识库 Skill 不授予自动更新大知识库的权限，普通训练/检索/局部 Wiki 更新均不附带更新它。
 
+### 复用已有算子 Skill 或 TraceLens
+
+`bootstrap_thirdparty.py --bind DEPENDENCY=PATH` 支持重复指定 `cuda-optimized-skill`、`tracelens` 和 `hcu-knowledge`。先绑定已有 checkout，再执行完整安装：
+
+```bash
+python scripts/bootstrap_thirdparty.py --only cuda-optimized-skill --bind cuda-optimized-skill=/path/to/cuda-optimized-skill
+python scripts/setup_trainflow.py --knowledge-root /path/to/HCU-Knowledge --skills-dir "$HOME/.codex/skills" --replace
+python scripts/bootstrap_thirdparty.py --status
+```
+
+TraceLens 已有完整 checkout 时同样使用 `--only tracelens --bind tracelens=/path/to/TraceLens`。绑定检查登记或显式批准的来源和所需文件，分别保存到 `thirdparty.local.json` 的 `cuda_optimized_skill_root`、`tracelens_root`、`hcu_knowledge_root`，保留其他依赖绑定。独立 checkout 保留当前提交和修改，安装和同步直接复用，不复制到受管目录、不自动 fetch 或重置。状态中的 `expected_commit` 是清单锁，`commit` 是实际版本；外部绑定不承诺两者相等，运行包或 Skill 的可用性由完整安装验收。
+
+用户明确选择自己的 fork 时，绑定命令可额外指定 `--bind-origin DEPENDENCY=URL`：
+
+```bash
+python scripts/bootstrap_thirdparty.py --only hcu-knowledge --knowledge-root /path/to/HCU-Knowledge --bind-origin hcu-knowledge=https://gitlab.example/team/hcu-knowledge.git
+```
+
+该选项须与同一依赖的 `--bind` 或 `--knowledge-root` 配合，实际 origin 必须完全匹配给定地址，且 Git 历史能证明当前 HEAD 包含清单锁定提交。来源批准仅记入本机 `thirdparty.local.json` 的 `external_sources`，同时绑定 checkout 路径；完整 setup 可复用这项记录，公共依赖清单保持原登记来源。其他 checkout 不继承批准，origin 改变或锁定提交不再可证明时检查失败。URL 仅接受不含凭据的 HTTP(S) 仓库地址，认证由用户的 Git 凭据机制提供；fork 的 LFS 读取权限及对象是否齐全仍由实际下载验收。
+
+`--status` 只读，不能同时设置绑定或来源批准。取消某一外部绑定时，删除本机 JSON 中对应路径键及其 `external_sources` 项，再检查并准备受管 checkout；其余绑定和独立仓内容均保留。
+
 ### Skills、账号与升级
 
 更新分为内容维护和本机同步，由更新 Skill 衔接完成：

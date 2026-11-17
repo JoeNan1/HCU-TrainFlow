@@ -134,6 +134,134 @@ def test_external_gitlab_binding_preserves_revision_and_rejects_unknown_source(t
         dependencies.bind_knowledge(root, seed)
 
 
+def test_explicit_fork_binding_is_local_path_scoped_and_survives_setup_rebind(tmp_path, monkeypatch):
+    root, item, seed = knowledge_mirror_fixture(tmp_path)
+    for name in ('kb.py', 'tools/setup_workspace.py', 'knowledge/INDEX.md',
+                 'skills/hcu-knowledge-search/SKILL.md', 'skills/hcu-knowledge-update/SKILL.md'):
+        path = seed/name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text('fixture')
+    fork = 'http://gitlab.example:10068/my-team/kb.git'
+    dependencies.git(seed, 'remote', 'set-url', 'origin', fork)
+    write_json(root/'thirdparty.local.json', {'cuda_optimized_skill_root': str(tmp_path/'cuda')})
+    with pytest.raises(FlowError, match='identity'):
+        dependencies.bind_knowledge(root, seed)
+    real_git = dependencies.git
+    def read_only(path, *args, **kwargs):
+        assert args[0] in {'rev-parse', 'remote', 'status', 'merge-base'}
+        assert args[0] != 'remote' or args[1] == 'get-url'
+        return real_git(path, *args, **kwargs)
+    monkeypatch.setattr(dependencies, 'git', read_only)
+    dependencies.bind_dependency(root, 'hcu-knowledge', seed, origin=fork)
+    dependencies.bind_knowledge(root, seed)  # Full setup repeats this existing binding.
+    bindings = json.loads((root/'thirdparty.local.json').read_text())
+    assert bindings['cuda_optimized_skill_root'] == str(tmp_path/'cuda')
+    assert bindings['external_sources'] == {'hcu-knowledge': {'path': str(seed), 'url': fork}}
+    state = dependencies.sync_dependencies(root, only=['hcu-knowledge'])['dependencies'][0]
+    assert state['status'] == 'ready' and state['source_approval'] == 'explicit-local-binding'
+    assert state['commit'] == item['commit']
+    assert dependencies.require_checkout(root, 'hcu-knowledge')[0] == seed
+    # Selecting a different checkout never transfers the earlier source approval.
+    different, _ = create_checkout(root, {**item, 'path': 'thirdparty/different'})
+    for name in dependencies._binding_requirements('hcu-knowledge'):
+        path = different/name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text('fixture')
+    real_git(different, 'remote', 'set-url', 'origin', fork)
+    with pytest.raises(FlowError, match='identity'):
+        dependencies.bind_knowledge(root, different)
+    # Changing the selected checkout's origin also invalidates the approval.
+    real_git(seed, 'remote', 'set-url', 'origin', 'http://gitlab.example:10068/another/kb.git')
+    assert dependencies.inspect_checkout(root, item)['status'] == 'origin-mismatch'
+
+
+def test_external_fork_requires_the_pinned_baseline_at_binding_and_status(tmp_path):
+    root, item, seed = knowledge_mirror_fixture(tmp_path)
+    for name in dependencies._binding_requirements('hcu-knowledge'):
+        path = seed/name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text('fixture')
+    fork = 'https://gitlab.example/my-team/kb.git'
+    dependencies.git(seed, 'remote', 'set-url', 'origin', fork)
+    dependencies.bind_dependency(root, 'hcu-knowledge', seed, origin=fork)
+    before = (root/'thirdparty.local.json').read_bytes()
+    item['commit'] = 'a'*40
+    write_json(root/'thirdparty/manifest.json', {'schema_version': 1, 'dependencies': [item]})
+    assert dependencies.inspect_checkout(root, item)['status'] == 'fork-baseline-mismatch'
+    with pytest.raises(FlowError, match='pinned commit'):
+        dependencies.bind_dependency(root, 'hcu-knowledge', seed, origin=fork)
+    assert (root/'thirdparty.local.json').read_bytes() == before
+
+
+@pytest.mark.parametrize('origin', ['http://user:example-secret@gitlab.example/my/kb.git',
+                                   'http://gitlab.example/my/kb.git?token=example-secret',
+                                   'file:///tmp/kb.git', 'https://gitlab.example/../kb.git'])
+def test_explicit_origin_rejects_credential_urls_and_invalid_sources(tmp_path, origin):
+    root, _, seed = knowledge_mirror_fixture(tmp_path)
+    for name in dependencies._binding_requirements('hcu-knowledge'):
+        path = seed/name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text('fixture')
+    with pytest.raises(FlowError, match='credential-free'):
+        dependencies.bind_dependency(root, 'hcu-knowledge', seed, origin=origin)
+    assert not (root/'thirdparty.local.json').exists()
+
+
+def test_multiple_external_bindings_preserve_revisions_edits_and_other_bindings(tmp_path, monkeypatch):
+    root, _ = manifest(tmp_path)
+    requirements = {
+        'hcu-knowledge': ('kb.py', 'tools/setup_workspace.py', 'knowledge/INDEX.md',
+                          'skills/hcu-knowledge-search/SKILL.md', 'skills/hcu-knowledge-update/SKILL.md'),
+        'cuda-optimized-skill': ('skills/hygon-hip-baseline-generator/SKILL.md',
+                                 'skills/hygon-hip-kernel-optimizer/SKILL.md',
+                                 'skills/hygon-triton-kernel-optimizer/SKILL.md'),
+        'tracelens': ('TraceLens/__init__.py', 'setup.py', 'README.md'),
+    }
+    items = [dict(id=name, path='thirdparty/'+name, url='https://github.com/example/'+name+'.git',
+                  commit='a'*40) for name in requirements]
+    write_json(root/'thirdparty/manifest.json', {'schema_version': 1, 'dependencies': items})
+    checkouts = {}
+    for item in items:
+        path, sha = create_checkout(root, {**item, 'path': 'thirdparty/seed-'+item['id']})
+        for name in requirements[item['id']]:
+            resource = path/name
+            resource.parent.mkdir(parents=True, exist_ok=True)
+            resource.write_text('fixture')
+        (path/'file.txt').write_text('user changes')
+        checkouts[item['id']] = (path, sha)
+    real_git = dependencies.git
+    def read_only(path, *args, **kwargs):
+        assert args[0] in {'rev-parse', 'remote', 'status'}
+        assert args[0] != 'remote' or args[1] == 'get-url'
+        return real_git(path, *args, **kwargs)
+    monkeypatch.setattr(dependencies, 'git', read_only)
+    for item in items:
+        dependencies.bind_dependency(root, item['id'], checkouts[item['id']][0])
+    bindings = json.loads((root/'thirdparty.local.json').read_text())
+    assert bindings == {'hcu_knowledge_root': str(checkouts['hcu-knowledge'][0]),
+                        'cuda_optimized_skill_root': str(checkouts['cuda-optimized-skill'][0]),
+                        'tracelens_root': str(checkouts['tracelens'][0])}
+    result = dependencies.sync_dependencies(root)
+    assert result['status'] == 'ready'
+    for row, item in zip(result['dependencies'], items):
+        path, sha = checkouts[item['id']]
+        assert row['external'] and row['dirty'] and row['commit'] == sha
+        assert row['commit'] != row['expected_commit']
+        assert dependencies.require_checkout(root, item['id'])[0] == path
+        assert (path/'file.txt').read_text() == 'user changes'
+        assert not (root/item['path']).exists()
+
+
+@pytest.mark.parametrize('bindings', [[], None, {'cuda_optimized_skill_root': None},
+                                      {'cuda_optimized_skill_root': 'relative/path'}])
+def test_malformed_binding_cannot_silently_fall_back_to_managed_checkout(tmp_path, bindings):
+    root, items = manifest(tmp_path)
+    item = {**items[0], 'id': 'cuda-optimized-skill'}
+    write_json(root/'thirdparty.local.json', bindings)
+    with pytest.raises(FlowError, match='binding|object'):
+        dependencies.dependency_path(root, item)
+
+
 @pytest.mark.parametrize('url', ['http://user:secret@gitlab.example/g/kb.git',
                                 'http://gitlab.example/g/kb.git?token=secret',
                                 'file:///tmp/kb.git', 'http://gitlab.example/../kb.git'])

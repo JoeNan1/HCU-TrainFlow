@@ -10,6 +10,12 @@ from .core import FlowError, read_json, write_json
 # Bound automatic history repair; never make an existing target a depth-one root.
 FORWARD_HISTORY_DEEPEN = 128
 
+EXTERNAL_BINDING_KEYS = {
+    'hcu-knowledge': 'hcu_knowledge_root',
+    'cuda-optimized-skill': 'cuda_optimized_skill_root',
+    'tracelens': 'tracelens_root',
+}
+
 
 def source_urls(item):
     """Registered equivalent origins; mirrors share the same pinned commit."""
@@ -18,6 +24,32 @@ def source_urls(item):
 
 def matches_source(item, origin):
     return origin.removesuffix('.git') in {url.removesuffix('.git') for url in source_urls(item)}
+
+
+def validate_external_origin(origin):
+    if (not isinstance(origin, str) or not re.fullmatch(
+            r'https?://[A-Za-z0-9.-]+(?::[0-9]+)?/(?:[A-Za-z0-9_-][A-Za-z0-9_.-]*/)+[A-Za-z0-9_-][A-Za-z0-9_.-]*\.git', origin)):
+        raise FlowError('External origin must be a credential-free HTTP(S) repository URL ending in .git')
+    return origin
+
+
+def external_origin(bindings, dependency, path):
+    """An explicit source approval applies only to its selected checkout path."""
+    sources = bindings.get('external_sources', {})
+    if not isinstance(sources, dict):
+        raise FlowError('external_sources must be an object')
+    if dependency not in sources:
+        return None
+    entry = sources[dependency]
+    if (not isinstance(entry, dict) or not isinstance(entry.get('path'), str)
+            or not Path(entry['path']).is_absolute()):
+        raise FlowError('External source approval needs an absolute checkout path')
+    origin = validate_external_origin(entry.get('url'))
+    return origin if Path(entry['path']).resolve() == path.resolve() else None
+
+
+def fork_contains_baseline(path, item):
+    return git(path, 'merge-base', '--is-ancestor', item['commit'], 'HEAD', check=False).returncode == 0
 
 
 def knowledge_ready(result):
@@ -33,31 +65,75 @@ def knowledge_ready(result):
 
 def dependency_path(root, item):
     binding = root / 'thirdparty.local.json'
-    if item['id'] == 'hcu-knowledge' and binding.is_file():
-        value = read_json(binding).get('hcu_knowledge_root')
-        if not isinstance(value, str) or not Path(value).is_absolute():
-            raise FlowError('HCU-Knowledge binding must be an absolute checkout path')
-        return Path(value).resolve(), True
+    key = EXTERNAL_BINDING_KEYS.get(item['id'])
+    if key and binding.is_file():
+        bindings = read_json(binding)
+        if not isinstance(bindings, dict):
+            raise FlowError('thirdparty.local.json must be an object')
+        if key in bindings:
+            value = bindings[key]
+            if not isinstance(value, str) or not Path(value).is_absolute():
+                raise FlowError(item['id'] + ' binding must be an absolute checkout path')
+            return Path(value).resolve(), True
     return root / item['path'], False
 
 
-def bind_knowledge(project, path):
-    """Reuse an explicitly selected independent KB; never pull or reset it."""
+def _binding_requirements(dependency):
+    if dependency == 'hcu-knowledge':
+        return ('kb.py', 'tools/setup_workspace.py', 'knowledge/INDEX.md',
+                'skills/hcu-knowledge-search/SKILL.md', 'skills/hcu-knowledge-update/SKILL.md')
+    if dependency == 'cuda-optimized-skill':
+        return ('skills/hygon-hip-baseline-generator/SKILL.md',
+                'skills/hygon-hip-kernel-optimizer/SKILL.md',
+                'skills/hygon-triton-kernel-optimizer/SKILL.md')
+    if dependency == 'tracelens':
+        return ('TraceLens/__init__.py', 'setup.py', 'README.md')
+    raise FlowError('Dependency does not support an external binding: ' + dependency)
+
+
+def bind_dependency(project, dependency, path, *, origin=None):
+    """Reuse an explicitly selected independent checkout; never pull/reset it."""
     root, entries = load_manifest(project)
-    item = next(x for x in entries if x['id'] == 'hcu-knowledge')
+    item = next((x for x in entries if x['id'] == dependency), None)
+    if item is None:
+        raise FlowError('Dependency is not registered: ' + dependency)
+    if dependency not in EXTERNAL_BINDING_KEYS:
+        raise FlowError('Dependency does not support an external binding: ' + dependency)
     path = Path(path).expanduser().resolve()
     if path == (root / item['path']).resolve():
-        raise FlowError('Managed knowledge checkout needs no external binding')
-    for name in ('kb.py', 'tools/setup_workspace.py', 'knowledge/INDEX.md',
-                 'skills/hcu-knowledge-search/SKILL.md', 'skills/hcu-knowledge-update/SKILL.md'):
+        raise FlowError('Managed checkout needs no external binding: ' + dependency)
+    for name in _binding_requirements(dependency):
         if not (path / name).is_file():
-            raise FlowError('Incomplete HCU-Knowledge checkout: ' + name)
+            raise FlowError('Incomplete ' + dependency + ' checkout: ' + name)
+    binding_path = root / 'thirdparty.local.json'
+    bindings = read_json(binding_path) if binding_path.is_file() else {}
+    if not isinstance(bindings, dict):
+        raise FlowError('thirdparty.local.json must be an object')
+    approved = validate_external_origin(origin) if origin is not None else external_origin(bindings, dependency, path)
     top = git(path, 'rev-parse', '--show-toplevel').stdout.strip()
-    origin = git(path, 'remote', 'get-url', 'origin').stdout.strip()
-    if Path(top).resolve() != path or not matches_source(item, origin):
-        raise FlowError('HCU-Knowledge checkout identity differs from the registered source')
-    write_json(root / 'thirdparty.local.json', {'hcu_knowledge_root': str(path)})
+    actual_origin = git(path, 'remote', 'get-url', 'origin').stdout.strip()
+    source_matches = actual_origin == approved if approved else matches_source(item, actual_origin)
+    if Path(top).resolve() != path or not source_matches:
+        raise FlowError(dependency + ' checkout identity differs from the registered or explicitly bound source')
+    if approved and not matches_source(item, approved) and not fork_contains_baseline(path, item):
+        raise FlowError('External fork must contain the manifest pinned commit; verify its history before binding')
+    bindings[EXTERNAL_BINDING_KEYS[dependency]] = str(path)
+    if approved:
+        # Persist only the non-secret, path-specific approval, never credentials.
+        sources = bindings.setdefault('external_sources', {})
+        if not isinstance(sources, dict):
+            raise FlowError('external_sources must be an object')
+        sources[dependency] = {'path': str(path), 'url': approved}
+    elif isinstance(bindings.get('external_sources'), dict):
+        bindings['external_sources'].pop(dependency, None)
+    write_json(binding_path, bindings)
     return path
+
+
+def bind_knowledge(project, path):
+    """Backward-compatible HCU-Knowledge binding helper."""
+
+    return bind_dependency(project, 'hcu-knowledge', path)
 
 
 def load_manifest(project):
@@ -120,16 +196,26 @@ def inspect_checkout(root, item):
     if top.returncode or Path(top.stdout.strip()).resolve() != path.resolve():
         return {**result, 'status': 'invalid-checkout'}
     origin = git(path, 'remote', 'get-url', 'origin', check=False)
-    if origin.returncode or not matches_source(item, origin.stdout.strip()):
+    approved = external_origin(read_json(root / 'thirdparty.local.json'), item['id'], path) if external else None
+    source_matches = origin.stdout.strip() == approved if approved else matches_source(item, origin.stdout.strip())
+    if origin.returncode or not source_matches:
         return {**result, 'status': 'origin-mismatch'}
     result['origin'] = origin.stdout.strip()
+    if approved:
+        result['source_approval'] = 'explicit-local-binding'
+        if not matches_source(item, approved) and not fork_contains_baseline(path, item):
+            return {**result, 'status': 'fork-baseline-mismatch',
+                    'action': 'Preserve the checkout; the approved fork must contain the manifest pinned commit'}
     head = git(path, 'rev-parse', '--verify', 'HEAD', check=False)
     dirty = git(path, 'status', '--porcelain', '--untracked-files=normal').stdout.strip()
     revision = head.stdout.strip() if not head.returncode else None
     if external:
+        note = ('Independent knowledge revision preserved; setup must verify its local index and Skills'
+                if item['id'] == 'hcu-knowledge' else
+                'Independent checkout revision preserved; installation must verify its runtime or Skills')
         return {**result, 'commit': revision, 'dirty': bool(dirty),
                 'status': 'ready' if revision else 'invalid-checkout',
-                'note': 'Independent knowledge revision preserved; setup must verify its local index and Skills'}
+                'note': note}
     return {**result, 'commit': revision, 'dirty': bool(dirty),
             'status': 'dirty' if dirty else 'ready' if revision == item['commit'] else 'revision-mismatch'}
 

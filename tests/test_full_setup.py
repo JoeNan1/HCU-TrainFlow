@@ -90,6 +90,56 @@ def test_gitlab_selection_reaches_setup_and_bootstrap(tmp_path, monkeypatch):
     assert selected == ['gitlab', 'gitlab']
 
 
+def test_bootstrap_repeated_bindings_and_legacy_knowledge_option(monkeypatch, tmp_path):
+    module = script('bootstrap_thirdparty')
+    bindings = []
+    monkeypatch.setattr(module, 'bind_dependency', lambda root, name, path: bindings.append((name, str(path))))
+    monkeypatch.setattr(module, 'sync_dependencies', lambda *a, **kw: {'status': 'ready'})
+    monkeypatch.setattr(sys, 'argv', ['bootstrap_thirdparty.py', '--only', 'cuda-optimized-skill',
+                                    '--bind', 'cuda-optimized-skill='+str(tmp_path/'cuda'),
+                                    '--bind', 'tracelens='+str(tmp_path/'lens'),
+                                    '--knowledge-root', str(tmp_path/'knowledge')])
+    assert module.main() == 0
+    assert bindings == [('cuda-optimized-skill', str(tmp_path/'cuda')),
+                        ('tracelens', str(tmp_path/'lens')), ('hcu-knowledge', str(tmp_path/'knowledge'))]
+
+
+def test_bootstrap_explicit_origin_is_forwarded_only_with_matching_binding(monkeypatch, tmp_path):
+    module = script('bootstrap_thirdparty')
+    calls = []
+    monkeypatch.setattr(module, 'bind_dependency', lambda *args, **kwargs: calls.append((args, kwargs)))
+    monkeypatch.setattr(module, 'sync_dependencies', lambda *a, **kw: {'status': 'ready'})
+    origin = 'https://gitlab.example/team/kb.git'
+    monkeypatch.setattr(sys, 'argv', ['bootstrap_thirdparty.py', '--only', 'hcu-knowledge',
+                                    '--knowledge-root', str(tmp_path/'kb'),
+                                    '--bind-origin', 'hcu-knowledge='+origin])
+    assert module.main() == 0
+    assert calls == [((module.ROOT, 'hcu-knowledge', str(tmp_path/'kb')), {'origin': origin})]
+
+
+@pytest.mark.parametrize('options', [['--bind-origin', 'hcu-knowledge=https://gitlab.example/team/kb.git'],
+                                    ['--bind-origin', 'hcu-knowledge'],
+                                    ['--status', '--knowledge-root', '/kb', '--bind-origin',
+                                     'hcu-knowledge=https://gitlab.example/team/kb.git']])
+def test_bootstrap_invalid_source_approval_cannot_mutate_bindings(monkeypatch, options):
+    module = script('bootstrap_thirdparty')
+    monkeypatch.setattr(module, 'bind_dependency', lambda *a, **kw: pytest.fail('Invalid approval must not write'))
+    monkeypatch.setattr(module, 'sync_dependencies', lambda *a, **kw: pytest.fail('Invalid approval must not sync'))
+    monkeypatch.setattr(sys, 'argv', ['bootstrap_thirdparty.py', *options])
+    assert module.main() == 1
+
+
+@pytest.mark.parametrize('options', [['--bind', 'tracelens=/existing'],
+                                    ['--knowledge-root', '/existing'],
+                                    ['--bind', 'tracelens'], ['--bind', '=']])
+def test_bootstrap_status_rejects_bindings_without_mutation(monkeypatch, options):
+    module = script('bootstrap_thirdparty')
+    monkeypatch.setattr(module, 'bind_dependency', lambda *a: pytest.fail('Status must not write bindings'))
+    monkeypatch.setattr(module, 'sync_dependencies', lambda *a, **kw: pytest.fail('Invalid arguments must stop before sync'))
+    monkeypatch.setattr(sys, 'argv', ['bootstrap_thirdparty.py', '--status', *options])
+    assert module.main() == 1
+
+
 def test_relative_full_setup_target_matches_actual_install_from_other_cwd(tmp_path, monkeypatch):
     setup = setup_fakes(monkeypatch, tmp_path)
     installer = script('install_skills')
