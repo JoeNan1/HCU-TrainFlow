@@ -1,0 +1,94 @@
+{
+  "task": {
+    "task_id": "REPLACE-WITH-STABLE-TASK-ID",
+    "mode": "full",
+    "objective": "REPLACE: 在 <节点/卡数> 上完成 <模型> 的适配、优化与扩容验证",
+    "context": {
+      "model": "REPLACE-WITH-MODEL",
+      "source_commit": "REPLACE-WITH-PINNED-SHA",
+      "environment": "REPLACE-WITH-SITE/DTK/DOCKER",
+      "data": "REPLACE-WITH-DATALOADER-FINGERPRINT",
+      "initial_baseline": "REPLACE-WITH-FROZEN-BASELINE-FINGERPRINT",
+      "quality_contract": "REPLACE-WITH-ATOL-RTOL-AND-SAMPLE-FINGERPRINT"
+    },
+    "permissions": ["execute", "agent-dispatch", "sync", "notify"],
+    "recovery_owner": "REPLACE-WITH-SITE-RECOVERY-OWNER",
+    "external_job": "REPLACE-WITH-SITE-JOB-IDENTITY",
+    "budget": {"max_operations": 240, "max_seconds": 259200}
+  },
+  "autonomy": {
+    "mode": "autonomous",
+    "reviewers": ["agent:reviewer-1", "agent:reviewer-2"],
+    "question_answers": [
+      {"match": "baseline", "answer": "使用 context 中冻结的 initial baseline，不重跑基线", "source": "policy:baseline-choice"},
+      {"match": "proxy", "answer": "允许在声明的卡数内缩 layer 做代理，并保留完整模型验收缺口", "source": "policy:proxy-scope"}
+    ],
+    "escalation": {
+      "degrade_ladder": [
+        {"action": "micro_batch_down", "min": 1},
+        {"action": "recompute_on", "allow": ["selective", "full"]},
+        {"action": "rebalance_parallel", "allow": ["tp", "pp", "dp"]},
+        {"action": "resume_from_checkpoint", "max_attempts": 2}
+      ],
+      "budget_extension": {"max_additions": 2, "operations_per_addition": 40,
+                           "hard_total_operations": 340},
+      "acceptance_edit": "forbid"
+    }
+  },
+  "plan": {
+    "acceptance": {
+      "environment": "所有分配设备与互联有可比预期和原始证据",
+      "quality": "阶段候选相对冻结初态通过约定 loss 与梯度验证",
+      "performance": "给出热点覆盖、非通信上限模型与 profiler-off 整步收益",
+      "scale": "恢复完整模型、逐级扩 DP 域并稳定运行约定时长"
+    },
+    "max_rounds": 20,
+    "max_stalled_rounds": 3,
+    "full_review_every": 4,
+    "max_review_failures": 3,
+    "poll_seconds": 300
+  },
+  "site": {
+    "ssh_target": "REPLACE-WITH-SSH-ALIAS",
+    "container": "REPLACE-WITH-TRAIN-CONTAINER",
+    "cwd": "/private/task-a/snapshot-REPLACE",
+    "commands": {
+      "environment": {
+        "argv": ["bash", "collect_environment.sh"],
+        "env": {},
+        "timeout_seconds": 600,
+        "basis": "REPLACE: site-a 已验收的采集脚本与版本"
+      },
+      "train": {
+        "argv": ["bash", "run_pretrain.sh"],
+        "env": {"MASTER_ADDR": "REPLACE-WITH-NODE", "WORLD_SIZE": "REPLACE-WITH-RANKS"},
+        "timeout_seconds": 7200,
+        "basis": "REPLACE: 已验收的 Megatron 启动配方与 commit"
+      },
+      "profile": {
+        "argv": ["bash", "collect_trace.sh"],
+        "env": {},
+        "timeout_seconds": 3600,
+        "basis": "REPLACE: 独立短 Trace 采集与回传方式"
+      }
+    },
+    "devices": [
+      {
+        "node": "REPLACE-WITH-NODE",
+        "device": 0,
+        "identity": "REPLACE-WITH-PCI-IDENTITY",
+        "idle_memory_bytes": 0,
+        "memory_tolerance_bytes": 0,
+        "max_utilization_pct": 0,
+        "basis": "REPLACE: 空载实测基线日期与出处"
+      }
+    ],
+    "occupancy": {
+      "max_age_seconds": 30,
+      "min_observations": 2,
+      "quiet_period_seconds": 10,
+      "shared_resources": ["REPLACE-WITH-NODE/hbm"]
+    },
+    "leases": ["hcu:REPLACE-WITH-NODE:REPLACE-WITH-PCI-IDENTITY"]
+  }
+}
