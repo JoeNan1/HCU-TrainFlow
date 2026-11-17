@@ -114,3 +114,51 @@ def test_verify_rechecks_a_recorded_report(tmp_path):
     assert result["claims"] == 1
     with pytest.raises(FlowError):
         integrity.verify(store, "t", "baseline")
+
+
+def test_shadow_mode_records_a_would_block_instead_of_refusing(tmp_path):
+    store = Store(tmp_path / "w")
+    store.create({"schema_version": 1, "task_id": "t", "mode": "full", "objective": "shadow",
+                  "context": dict(CONTEXT), "permissions": ["execute"],
+                  "profile": dict(PROFILE), "shadow_guardrails": True})
+    flow.start(store, "t", {"acceptance": {"result": "Deliver evidence"}})
+    proof = record(store, throughput=1234.0)
+    body = {"context": store.task("t")["context"], "status": "pass", "executed": 1,
+            "evidence": [proof]}  # no claims: refused normally
+    with pytest.raises(FlowError):
+        store.report("t", "environment", body)
+    assert store.report("t", "environment", body, shadow=True)["status"] == "pass"
+    findings = integrity.shadow_findings(store, "t")
+    assert findings["status"] == "attention"
+    assert "claims" in findings["findings"][0]["problems"][0]
+
+
+def test_shadow_mode_must_be_declared_when_the_task_is_created(tmp_path):
+    store = setup(tmp_path)  # no shadow_guardrails
+    proof = record(store, stage="environment_checked")
+    body = {"context": store.task("t")["context"], "status": "pass", "executed": 1, "evidence": [proof]}
+    with pytest.raises(FlowError) as excinfo:
+        store.report("t", "environment", body, shadow=True)
+    assert "shadow_guardrails" in str(excinfo.value)
+
+
+def test_a_report_cannot_declare_itself_capability_computed(tmp_path):
+    """Only the runtime may set agent_authored; a body field changes nothing."""
+
+    store = setup(tmp_path)
+    proof = record(store, stage="environment_checked")
+    body = {"context": store.task("t")["context"], "status": "pass", "executed": 1,
+            "evidence": [proof], "agent_authored": False}
+    with pytest.raises(FlowError) as excinfo:
+        store.report("t", "environment", body)
+    assert "claim" in str(excinfo.value)
+
+
+def test_verify_lists_claims_that_point_at_nothing(tmp_path):
+    store = setup(tmp_path)
+    proof = record(store, stage="environment_checked")
+    report(store, proof, [claim(), claim(id="c2", statement="Second conclusion")])
+    result = integrity.verify(store, "t", "environment")
+    assert result["claims"] == 2
+    assert result["unbound"] == ["c1", "c2"]
+    assert result["status"] == "pass"  # visible, not a refusal by itself

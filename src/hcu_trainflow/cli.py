@@ -56,7 +56,9 @@ def parser():
     cmd("artifact-add", "file")
     cmd("artifact-read", "sha", "destination")
     q = cmd("report-add", "task", "kind", "file"); q.add_argument("--brief-hash", help="flow-brief hash this report was written against")
+    q.add_argument("--shadow", action="store_true", help="Record what would have been refused (task must declare shadow_guardrails)")
     cmd("report-verify", "task", "kind")
+    q = cmd("integrity-shadow"); q.add_argument("task", nargs="?", help="Limit the report to one task")
     q = cmd("evidence-backfill"); q.add_argument("task", nargs="?", help="Limit the backfill to one task")
     q = cmd("lease-acquire", "resource", "owner"); q.add_argument("--ttl", type=float, default=300)
     q = cmd("lease-renew", "file"); q.add_argument("--ttl", type=float, default=300)
@@ -235,10 +237,14 @@ def execute(a):
         if bound:
             from . import flow
             flow.verify_brief(store, a.task, bound)
-        return store.report(a.task, a.kind, read_json(a.file))
+        return store.report(a.task, a.kind, read_json(a.file),
+                            shadow=bool(getattr(a, "shadow", False)))
     if c == "report-verify":
         from . import integrity
         return integrity.verify(store, a.task, a.kind)
+    if c == "integrity-shadow":
+        from . import integrity
+        return integrity.shadow_findings(store, getattr(a, "task", None))
     if c == "evidence-backfill":
         return store.attribute_evidence(getattr(a, "task", None))
     if c == "lease-acquire": return store.lease(a.resource, a.owner, a.ttl)

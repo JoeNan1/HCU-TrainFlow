@@ -10,6 +10,8 @@
 
 可选 `profile` 声明本任务使用的子工作流，字段封闭、`{id, reason}` 二者必填（未知字段、非 slug 的 id、空理由都报错）。`flow-start` 校验该 profile 存在且与任务 context 的 engine/model_family/mode 不冲突；它只决定"这个场景需要哪些模块"，不推进阶段，也不放宽门禁。门禁按 profile 派生，派生结果只能 ⊆ `flow.GATES`；profile 未覆盖的阶段仍按全量门禁执行，见[模块化拆分与子工作流](workflow-modules.md#14-b6把门禁接进任务已完成)。
 
+可选 `shadow_guardrails: true` 在创建任务时声明"测量模式"：证据归属与 claims 检查照跑，但被拒绝的理由改为 `integrity-shadow` 事件留存、报告照常登记。它用于在真实任务上量误报率，必须建任务时声明，运行中不能自行开启；`integrity-shadow [TASK]` 列出这些记录。
+
 可选 `autonomy` 声明无人工通道的自主策略，字段封闭（未知字段报错）：`mode` 仅 `autonomous`，`reviewers` 为非空去重身份列表，`question_answers` 为 `{match, answer, source}` 三元组数组；可选 `escalation` 预授权有界自救——`degrade_ladder`（动作+下限/允许项，动作限于 micro_batch_down/recompute_on/rebalance_parallel/layers_down/resume_from_checkpoint/restart_clean）、`budget_extension`（每次追加上限、次数上限与硬总上限）与 `acceptance_edit`（`forbid` 或 `add-only`）。它只改变决策来源，不改变报告、复核与证据门禁；行为见[协作循环的自主模式](collaboration.md#自主模式无人工通道)。
 
 context 包含初始 baseline、环境、模型、数据与质量契约身份。baseline 和 candidate 的源码可以不同，但属于同一个已冻结比较上下文。挂接协作循环后，各轮 candidate.snapshot 单独锁具体实现、配置与产物，报告必须绑定对应 candidate_snapshot；不能将旧报告移用到新候选。环境、模型、数据、初始基线或验证契约变化时用 task-context 更新并重新验收。未挂接 flow 的旧式任务没有候选绑定，仍需将候选身份放在 context，改变候选后更新 context。

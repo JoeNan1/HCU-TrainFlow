@@ -50,7 +50,7 @@ description: 统一编排 HCU 大模型训练适配、性能优化、大规模�
 
 每轮先把状态读回来：`flow-brief TASK` 给出目标与验收指纹、门禁、候选快照、可用证据、未决问题与预算剩余，`flow-submit`/`report-add` 带上它的 `brief_hash`。会话被压缩、换会话或换主控之后必须重新取 brief，不要用上一轮的叙述重建当前状态；状态变了会返回 `stale-brief`，自主任务不带哈希会返回 `unverified-turn`。阶段边界跑 `flow-align`，把目标、验收、profile 与当前阶段和存储的 plan 对一遍，有 delta 就 `flow-replan` 留理由。
 
-报告里的数字写进 `claims`：`{id, statement, stage?, value?, source: {artifact, path}}` 指向原件，`report-verify TASK KIND` 可事后重跑校验。程序只判引用、数值、流程、范围四类机械问题，指向不了原件的结论只能写 incomplete；不要用文字复述替代可核对的数值。
+报告里的数字写进 `claims`：`{id, statement, stage?, value?, source: {artifact, path}}` 指向原件，`report-verify TASK KIND` 可事后重跑校验并列出没有 `source` 的 claim。程序只判引用、数值、流程、范围四类机械问题，指向不了原件的结论只能写 incomplete；不要用文字复述替代可核对的数值，也不要把"没有 source 的 claim"当作已完成覆盖。
 
 review 按 `docs/collaboration.md`“工作与审核的粒度”使用完整字段；一个候选可包含多次有界初筛，不逐次试参安排 RLCR。每隔配置轮次及扩容/长训/结束边界做全目标检查，不将全目标检查解释为全量重测。局部失败先按已有预算诊断/回退；持续数值退化、无收益平台期、反复工具失败再携最小证据包升级。非阻塞改进记 followup，不挡实际工作。
 

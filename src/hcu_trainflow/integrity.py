@@ -140,6 +140,21 @@ def check_claims(store, task, kind, value, *, require=False):
     return claims
 
 
+def shadow_findings(store, tid=None):
+    """Refusals recorded while the task was in declared shadow mode."""
+
+    with store.db() as db:
+        rows = db.execute(
+            "SELECT task,payload FROM events WHERE kind='integrity-shadow'"
+            + (" AND task=?" if tid else "") + " ORDER BY seq", ((tid,) if tid else ())).fetchall()
+    result = []
+    for row in rows:
+        body = json.loads(row["payload"])
+        result.append({"task": row["task"], "kind": body.get("kind"),
+                       "artifact": body.get("artifact"), "problems": body.get("problems", [])})
+    return {"status": "attention" if result else "pass", "findings": result}
+
+
 def verify(store, tid, kind):
     """Re-check a recorded report against the store without changing anything."""
 
@@ -164,6 +179,8 @@ def verify(store, tid, kind):
             continue
         if owners and tid not in owners:
             problems.append("Evidence belongs to another task: " + sha)
+    claims = body.get("claims") or []
+    unbound = [claim.get("id") for claim in claims if "source" not in claim]
     return {"task": tid, "kind": kind, "artifact": row["artifact"],
             "status": "pass" if not problems else "incomplete",
-            "claims": len(body.get("claims") or []), "problems": problems}
+            "claims": len(claims), "unbound": unbound, "problems": problems}

@@ -278,7 +278,8 @@ PROFILE_ID = re.compile(r"^[a-z][a-z0-9]*(-[a-z0-9]+)*$")
 
 def validate_spec(spec):
     allowed = {"schema_version", "task_id", "mode", "objective", "context", "permissions",
-               "recovery_owner", "budget", "external_job", "autonomy", "profile"}
+               "recovery_owner", "budget", "external_job", "autonomy", "profile",
+               "shadow_guardrails"}
     if set(spec) - allowed or spec.get("schema_version") != 1:
         raise FlowError("Unsupported TaskSpec version or unknown fields")
     safe_id(spec.get("task_id"))
@@ -296,6 +297,10 @@ def validate_spec(spec):
             raise FlowError("Budgets must be positive finite numbers")
     if "autonomy" in spec:
         validate_autonomy(spec["autonomy"])
+    if "shadow_guardrails" in spec and spec["shadow_guardrails"] is not True:
+        # Declared at creation so an operator decides to measure; an agent
+        # cannot switch the guardrails into observation mode mid-run.
+        raise FlowError("shadow_guardrails must be true when declared")
     if "profile" in spec:
         # A sub-workflow selection must be reproducible: the chosen id and the
         # reason it was chosen are both required, so a later reader can tell
@@ -322,6 +327,9 @@ class Store:
             CREATE TABLE IF NOT EXISTS artifacts(id TEXT PRIMARY KEY,path TEXT NOT NULL,size INTEGER NOT NULL,visibility TEXT NOT NULL,created TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS reports(task TEXT,kind TEXT,context TEXT,artifact TEXT,result TEXT,created TEXT,PRIMARY KEY(task,kind,context));
             CREATE TABLE IF NOT EXISTS events(seq INTEGER PRIMARY KEY AUTOINCREMENT,event_id TEXT UNIQUE,task TEXT,kind TEXT,payload TEXT,created TEXT);
+            CREATE INDEX IF NOT EXISTS events_artifact ON events(json_extract(payload,'$.artifact'));
+            CREATE INDEX IF NOT EXISTS events_task ON events(task,seq);
+            CREATE INDEX IF NOT EXISTS events_task_kind ON events(task,kind,seq);
             CREATE TABLE IF NOT EXISTS outbox(event_id TEXT PRIMARY KEY,channel TEXT,status TEXT,attempts INTEGER DEFAULT 0,detail TEXT);
             CREATE TABLE IF NOT EXISTS leases(resource TEXT PRIMARY KEY,owner TEXT,token INTEGER,expires REAL);
             CREATE TABLE IF NOT EXISTS operations(id TEXT PRIMARY KEY,task TEXT,request_hash TEXT,status TEXT,result TEXT,created TEXT);
@@ -499,7 +507,8 @@ class Store:
                     written += 1
             return {"reports": len(rows), "attributed": written}
 
-    def report(self, tid, kind, value, *, expected_revision=None, agent_authored=True):
+    def report(self, tid, kind, value, *, expected_revision=None, agent_authored=True,
+               shadow=False):
         task = self.task(tid)
         if expected_revision is not None and task["revision"] != expected_revision:
             raise PipelineContextConflict("Task revision changed before recording Pipeline report")
@@ -509,19 +518,29 @@ class Store:
             raise FlowError("Report needs an explicit status")
         if not value.get("evidence") or not isinstance(value["evidence"], list):
             raise FlowError("Report requires retained evidence IDs")
+        if shadow and task["spec"].get("shadow_guardrails") is not True:
+            # Measuring is declared when the task is created; a run cannot opt
+            # itself into observation mode to get past a refusal.
+            raise FlowError("shadow mode requires shadow_guardrails declared at task creation")
+        problems = []
         for sha in value["evidence"]:
             self.artifact(sha)
             owners = set() if self.artifact_public(sha) else self.artifact_tasks(sha)
             if owners and tid not in owners:
-                raise FlowError("Evidence " + sha + " belongs to another task")
+                problems.append("Evidence " + sha + " belongs to another task")
         from .integrity import check_claims, claims_required
         # Claims are checked here, at the boundary where the evidence is turned
         # into a conclusion, not at the end of the flow: detectability decays
         # once a number has become prose. A capability-computed report is
         # already derived from typed inputs, so only agent-authored prose must
         # carry them; any claims it does state are still verified.
-        check_claims(self, task, kind, value,
-                     require=agent_authored and claims_required(task, kind))
+        try:
+            check_claims(self, task, kind, value,
+                         require=agent_authored and claims_required(task, kind))
+        except FlowError as exc:
+            problems.append(str(exc))
+        if problems and not shadow:
+            raise FlowError(problems[0])
         if value["status"] == "pass" and not valid_pass(value):
             raise FlowError("PASS requires actual execution, no failures and required coverage")
         if kind == "stage-quality" and value["status"] == "pass":
@@ -539,6 +558,11 @@ class Store:
             db.execute("INSERT OR REPLACE INTO reports VALUES(?,?,?,?,?,?)", (tid, kind, task["context"], sha, value["status"], utc()))
             self.event(db, tid, "report-recorded", {"kind": kind, "artifact": sha, "status": value["status"],
                                                    "context_spec": task['spec']['context']})
+            if problems:
+                # Declared measurement: the report stands, the refusal it would
+                # have earned is retained so the false-positive rate is countable.
+                self.event(db, tid, "integrity-shadow",
+                           {"kind": kind, "artifact": sha, "problems": problems})
             # Remember which task produced each cited object, so a later report
             # cannot borrow evidence that belongs to another task.
             for item in value["evidence"]:

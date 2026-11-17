@@ -634,3 +634,11 @@ HCU-Knowledge阶段已提交3829ef06、tag v0.5.6，两远端核对current且工
 - 补 `evidence-backfill [TASK]`：从已登记报告正文回填归属事件，幂等；回填后同一回放变为 `Evidence ... belongs to another task`。审计脚本同时报告每个 store 的无主证据数，便于判断是否要先回填。
 - 顺带修正 brief 哈希口径：只对"决定下一步动作"的字段取指纹（目标、验收、context、state/revision、profile、invariants、候选、未决问题、预算、降级），不含证据清单与最近事件尾部——否则每写一份报告都会挪动哈希，把正常步骤变成误报的 `stale-brief`。新增两条回归：同状态同哈希、读 brief 不改哈希、重规划必变。
 - 验证：全量 **1612 passed / 3 skipped**（525.71 秒）；文档 208 页 0 issues；Skill 资源 current；本机安装同步后 `--check` current。
+
+## 2026-11-17：验证第二轮（重放 / 影子 / 性能 / 残余风险）
+
+- **1 决策重放**：新增 `scripts/replay_flow_decisions.py`，在 store 副本上重放历史——每条 `state-changed` 是否仍合法、无 profile 任务的 `required_reports` 是否仍等于 `flow.GATES`、`brief_token` 是否稳定、`flow-align` 是否干净。真实 5 个 store：2 个有 flow 的任务（profiling / optimizing）**9/9 迁移合法、gates_match=True、brief_stable=True、align=aligned**，另 3 个 draft 任务未挂 flow，跳过。配套新增 `tests/test_flow_machine_contract.py`，把 `NEXT`/`PIPELINE`/`GATES`/`llm-megatron` 派生门禁/`AGENT_AUTHORED` 的黄金值锁死。
+- **2 影子模式**：`spec.shadow_guardrails: true`（建任务时声明，运行中不能自开）+ `report-add --shadow` + `integrity-shadow [TASK]`。被拒绝的理由改写成 `integrity-shadow` 事件、报告照常登记，用于真实任务上量误报率。CLI 冒烟：同一份无 claims 的 pass 报告，严格模式被拒、影子模式登记并列出 `PASS requires claims…`。
+- **3 性能**：新增 `scripts/bench_report_path.py`。定位到写入慢的根因不在新检查，而是 `context_epoch` 对 events 的全表扫描（7.6ms/次）；补 `events(task,kind,seq)` 与 `events(json_extract(payload,'$.artifact'))`/`events(task,seq)` 索引后，2 万事件 / 100 份报告场景 **p50 55.7 → 50.0 ms、p95 82.0 → 78.5 ms**——新检查约 3ms，被索引收益覆盖。新增 `tests/test_report_performance.py`：事件量放大 10 倍，报告耗时不得超过 3 倍（防回归成扫描）。
+- **4 残余风险**：`agent_authored` 只能由 runtime 传参，报告正文里写 `agent_authored:false` 不生效（测试锁定）；`report-verify` 现在返回 `unbound`（没有 `source` 的 claim）列表；复核硬规则写进 `collaboration.md` 与协调器 Skill——"没有 source 的 claim 不算覆盖验收项"。
+- 验证：全量 **1621 passed / 3 skipped**（512.58 秒）；文档 208 页 / 107 CLI 示例 / 44 JSON 示例 0 issues；Skill 资源与安装 `--check` current。
