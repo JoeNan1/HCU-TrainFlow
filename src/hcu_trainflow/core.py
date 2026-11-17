@@ -449,7 +449,37 @@ class Store:
                     raise FlowError("Artifact hash mismatch")
                 yield sha, data
 
-    def report(self, tid, kind, value, *, expected_revision=None):
+    def artifact_tasks(self, sha):
+        """Tasks a retained object is already attributable to.
+
+        Attribution comes from whatever recorded the object: an event that
+        names it, a Pipeline step that produced it, or an operation result.
+        Unattributed and public objects stay usable (existing workspaces and
+        shared baselines keep working), but a private object attributable only
+        to another task may not be cited here.
+        """
+
+        with self.db() as db:
+            tasks = {row[0] for row in db.execute(
+                "SELECT DISTINCT task FROM events WHERE task IS NOT NULL"
+                " AND json_extract(payload,'$.artifact')=?", (sha,))}
+            tasks |= {row[0] for row in db.execute(
+                "SELECT DISTINCT r.task FROM pipeline_steps s JOIN pipeline_runs r ON r.id=s.run"
+                " WHERE s.artifact=? OR s.report=?", (sha, sha))}
+            tasks |= {row[0] for row in db.execute(
+                "SELECT DISTINCT task FROM operations WHERE task IS NOT NULL"
+                " AND (json_extract(result,'$.artifact')=?"
+                " OR json_extract(result,'$.evidence')=?)", (sha, sha))}
+        return {task for task in tasks if task}
+
+    def artifact_public(self, sha):
+        """Public objects are the declared way to share evidence across tasks."""
+
+        with self.db() as db:
+            row = db.execute("SELECT visibility FROM artifacts WHERE id=?", (sha,)).fetchone()
+        return bool(row) and row[0] == "public"
+
+    def report(self, tid, kind, value, *, expected_revision=None, agent_authored=True):
         task = self.task(tid)
         if expected_revision is not None and task["revision"] != expected_revision:
             raise PipelineContextConflict("Task revision changed before recording Pipeline report")
@@ -461,6 +491,17 @@ class Store:
             raise FlowError("Report requires retained evidence IDs")
         for sha in value["evidence"]:
             self.artifact(sha)
+            owners = set() if self.artifact_public(sha) else self.artifact_tasks(sha)
+            if owners and tid not in owners:
+                raise FlowError("Evidence " + sha + " belongs to another task")
+        from .integrity import check_claims, claims_required
+        # Claims are checked here, at the boundary where the evidence is turned
+        # into a conclusion, not at the end of the flow: detectability decays
+        # once a number has become prose. A capability-computed report is
+        # already derived from typed inputs, so only agent-authored prose must
+        # carry them; any claims it does state are still verified.
+        check_claims(self, task, kind, value,
+                     require=agent_authored and claims_required(task, kind))
         if value["status"] == "pass" and not valid_pass(value):
             raise FlowError("PASS requires actual execution, no failures and required coverage")
         if kind == "stage-quality" and value["status"] == "pass":
@@ -478,6 +519,10 @@ class Store:
             db.execute("INSERT OR REPLACE INTO reports VALUES(?,?,?,?,?,?)", (tid, kind, task["context"], sha, value["status"], utc()))
             self.event(db, tid, "report-recorded", {"kind": kind, "artifact": sha, "status": value["status"],
                                                    "context_spec": task['spec']['context']})
+            # Remember which task produced each cited object, so a later report
+            # cannot borrow evidence that belongs to another task.
+            for item in value["evidence"]:
+                self.event(db, tid, "artifact-claimed", {"artifact": item, "kind": kind})
         from .experience import sync
         try:
             knowledge=sync(self,tid)

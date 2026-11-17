@@ -290,7 +290,8 @@ class RuntimeService:
                     artifact = rows[step.id]["artifact"]
                     body["evidence"] = list(dict.fromkeys([*evidence, artifact]))
                     report = self.store.report(task["id"], kind, body,
-                                               expected_revision=task["revision"])["artifact"]
+                                               expected_revision=task["revision"],
+                                               agent_authored=False)["artifact"]
                     self.store.pipeline_step(run_id, step.id, step.capability, step.action, result.status,
                                              result.to_dict(), artifact, report)
 
