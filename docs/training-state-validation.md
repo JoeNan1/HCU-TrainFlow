@@ -106,3 +106,20 @@ python -B scripts/probe_training_tempdir.py \
 大量很小的张量可能先耗尽描述符或主机映射额度，而非 GPU 容量。失败时错误记录自身也可能无法再分配内存，应提前流式保留关键指标。不要把提高系统限额当作默认修复；先查对应 HCU/上游版本已有实现及同步要求，局部修复需保留原生数值和格式契约。
 
 对 CPU 搬运方式的改变，应检查 dtype、stride、空 tensor、metadata、同步完成和后续 writer/load。只验证同步保存，不得顺带宣布异步/NVRx 等路径可用。补丁进入目标仓之前检查最新上游是否已修复，并附受影响路径的单测、环境、正确性及性能成本。
+
+## 纯 torch 训练日志的声明格式
+
+Megatron 之外没有通用训练日志格式，因此 `training.summarize-torch` 不猜格式，要求任务契约显式声明 `log_format`。两种模式：
+
+| 模式 | 契约字段 | 说明 |
+| --- | --- | --- |
+| `jsonl` | `{"kind":"jsonl","step":"step","loss":"loss","seconds":"seconds"}` | 每行一个对象；字段名可改。可选 `{"kind":"meta","fresh":true,"profiler":false}` 声明初态与 profiler 状态，`{"kind":"evaluation","step":N,"split":"validation","loss":x}` 声明验证集读数 |
+| `pattern` | `{"kind":"pattern","pattern":"iteration (?P<step>\\d+) loss (?P<loss>[0-9.]+)"}` | 单条正则，必须含命名组 `step`、`loss`；`seconds` 组可选 |
+
+两种模式都要求 `expected_steps`、`steady_start`、`timing_groups`、`min_samples_per_group`；`world_size`/`global_batch_size`/`seq_length` 三者齐备时才给出 tokens/s/gpu，缺省留 `null` 而不是估一个值。`required_evaluations` 与 `max_group_relative_spread` 与 Megatron 摘要同语义。
+
+边界：
+
+- 不匹配的行、非 JSON 行会计入 `unparsable-log-lines`，不会被静默丢弃。日志里夹带其他输出时，要么让 writer 只输出声明格式，要么在契约里收紧 pattern。
+- `pattern` 模式没有 meta 记录，因此**无法证明**从零初始化与 profiler 关闭，摘要保留 `fresh_initialization=false`、`profiler_off=false` 并把两项记入 `required_missing`；这种摘要仍可看 step 与耗时，但不能作为 `baseline` 的通过证据。
+- 摘要只反映日志声明的事实；`executed`、连续 iteration、loss 有限性是解析结果，不代表模型质量或长稳已验收。

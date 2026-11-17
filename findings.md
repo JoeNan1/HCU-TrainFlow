@@ -415,3 +415,18 @@ Git 当前跟踪 Markdown：根目录 9、docs 40、skills 23、thirdparty 2、�
 - 原 task_plan 同时有多个 Current/Active 和早期可选 HCU-Knowledge 规则；全部归入标明用途的历史折叠区，当前任务置顶，保留当时记录不伪造完成状态。findings/progress 同样声明历史范围。
 - check_documentation 新增离线当前文档检查；CI/首次安装/本机同步执行，补足根目录、锚点、大小写、孤立指南、CLI/JSON、版本、旧 Skill 调用与第三方来源名单盲区。固定上游和历史正文明确排除，不自动修改。
 - 初次审查误用了不存在的 ci.yml/collaboration.py 路径；已通过文件发现确认实际 test.yml 及 flow 模块。新检查初次发现图片提示词无入链，已从流程图正文补维护入口。
+
+## 2026-11-05：第二阶段发现
+
+原 modular_cli 同时拥有恢复/报告/持久化，run identity 未包含输入；阻塞步骤未执行持久化回调，独立运行不保留证据。当前无 PyTorch，DTK/hipcc/hipprof 可用。本机 8 卡都存在较高占用且管理工具不能列出进程；不得以此现场执行主动负载。硬件只准备并编译 HIP 基线，保留实际准入阻塞，不宣称真实训练验收。
+
+公共服务最终复核补齐：报告延迟到运行末尾并带 expected_revision 事务检查；指纹覆盖全包 Python 实现与固定 TraceLens 绑定；重跑依赖时失效后继成功缓存；独立非 full Task 无 Flow 时沿用原执行权限/Lease/Operation。新请求作为 request_artifact 保留，旧无指纹 run 可查不可复用。
+# 2026-11-06 Pipeline 闭环补充
+
+- 原实验只能证明部分模块及两步 Pipeline，不能证明从环境到训练、Trace、分析、验收的完整串联；历史质量自比较不能证明优化收益。
+- 新增 `artifact.collect`、`training.summarize`、hipprof capability 路径与 `quality.accept/qualify`。输出用 SHA 回执和 artifact 传递，未来输出路径通过 bindings 进入后继，避免污染不可变输入指纹。
+- `baseline_pipeline` 生成八步 DAG，由原 RuntimeService 执行；独立 CLI/Python 能力仍保留。基线 qualification 保持 stage_eligible=false 和 optimization_validated=false，profile-summary 不冒充完整模型 analysis 报告。
+- CPU 实际子进程与固定 TraceLens 的完整链路、输出缺失后的恢复、不重复启动训练和文件输入变更拒绝均验证；不将合成数据称为 HCU 验收。
+- 固定 TraceLens hipprof 表的时间列需要核对单位；新摘要直接使用 normalized event 精确 delta_ns，并计算设备 busy union，明确 summed kernel share 不等于墙钟贡献。
+- Lane C 首次 collector 假定容器有 ip 命令，实际不存在，正确阻塞了全部下游。采集改为 sysfs；正式任务保留此真实失败，故障演练另用独立测试 Store。
+- 本机与远端容器共享宿主机；正式训练/Trace 期间暂停重型 CPU 测试，避免性能干扰。

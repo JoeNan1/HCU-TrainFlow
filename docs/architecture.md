@@ -2,6 +2,8 @@
 
 按训练任务推进顺序阅读 [工作流全景与阶段细图](workflow-map.md)；本页说明系统职责和实现边界。
 
+模块化能力与可组合 Pipeline 的迁移设计见[模块化架构](modular-architecture.md)；模块目录、子工作流分流与门禁派生见[模块化拆分与子工作流](workflow-modules.md)。公共 `RuntimeService` 为 CLI 与 Python 统一持久化、恢复及报告登记，能力复用既有领域实现；旧 `core`、`flow` 和 CLI 契约继续兼容。
+
 ```mermaid
 flowchart TD
     U[用户目标与部署授权] --> A[本地主控 Agent]

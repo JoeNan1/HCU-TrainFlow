@@ -45,11 +45,14 @@ description: 统一编排 HCU 大模型训练适配、性能优化、大规模�
 | `advance` | `flow-advance` 检查证据并推进；未变化的已审基线交接会返回 `review_reused: true`，直接沿用，不另请 reviewer 或重跑基线。其他候选仍须当前独立复核。 |
 | `reconcile` | 先确认原作业/attempt/执行是否仍在运行，再凭证据核销不确定操作；不得盲目重跑。 |
 | `human` | 读取新指导并回复，或提出真正需要人的问题。能独立完成的证据收集继续做；不绕过权限、数值问题、预算或专家介入边界。 |
+| `halt` | 自主任务（`spec.autonomy`）在此停止，原因与证据已留存，不等待人。判定自带 `options`：可用降级动作、剩余预算额度、可自决问题与必须升级的类别，按菜单处置即可。自己能决定的用 `flow-question-resolve`/`flow-degrade`/`budget-extend` 留痕后继续；需要新授权、输入或方向时另起任务或 `flow-replan`。不得放宽门槛、复用旧复核或突破硬顶继续推进。 |
 | `completed` / `cancelled` | 给出自包含的结果、证据、未解决限制和交付位置；未满足请求不能自行宣告完成。 |
 
 review 按 `docs/collaboration.md`“工作与审核的粒度”使用完整字段；一个候选可包含多次有界初筛，不逐次试参安排 RLCR。每隔配置轮次及扩容/长训/结束边界做全目标检查，不将全目标检查解释为全量重测。局部失败先按已有预算诊断/回退；持续数值退化、无收益平台期、反复工具失败再携最小证据包升级。非阻塞改进记 followup，不挡实际工作。
 
 环境/模型/扩容出现可信性能差距时，主控按项目 `docs/environment-discovery.md` 第 6 节派发基本排查与有界尝试，不能接受只有差距表的“完成”报告。复核原件口径、链路/库版本和 HCU 知识/源码后，在已有授权与资源准入范围内自主推进可逆对照；核验正确性、生效路径、回归与回退。`environment-check` 的 `follow_up_required` 或 `performance_discrepancy` 进入当前 flow/经验记录；条件未知不是忽略理由，未解决保持 fail/incomplete。分析-only 或实际权限不足时保留待执行项，报告已排除项与具体所需权限，不能虚构实验或扩大站点改动范围。
+
+声明 `spec.autonomy` 的任务没有人工通道：采集到的指导以 `autonomy-policy` 身份记为 advisory，只有 `question_answers` 命中的阻塞问题才会关闭，其余未决情形返回 `halt` 而不是等待。`flow-drive` 可串起无人推进（自动执行 `advance`，把 work/repair/review 交回主控）。技术性失败按 `escalation.degrade_ladder` 用 `flow-degrade` 沿声明阶梯自救，预算在 `budget_extension` 硬顶内用 `budget-extend` 追加，验收条款只能按 `acceptance_edit` 保持不变或追加。这不降低门禁：报告、独立复核与证据照旧，行为边界见 `docs/collaboration.md` 的自主模式。
 
 自主调参前先确认现场已有启动命令和环境脚本，按原顺序核对 DTK 激活与现场配置在各 rank 的实际生效情况；用户提供完整配方时优先复现并列出与先前测试的差异。基本排查/有界尝试后仍有可信显著差距，按 `docs/collaboration.md` 的“问题升级与用户决定”形成简报，创建阻塞 `flow-question`、更新看板并向用户提出具体推荐和选择。等待答复时停止扩展同一调查及受影响的验收，不以“后续再查”交付了事；无关只读分析可继续。用户已经给出下一步决定时按该范围执行，不重复询问。
 

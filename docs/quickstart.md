@@ -49,7 +49,7 @@ hcu-trainflow --workspace /private/task-a task-create /private/task-a/task.json
 hcu-trainflow --workspace /private/task-a task-show example-analysis
 ```
 
-CLI 所有输出默认 JSON。0 表示命令正常完成；2 表示 fail/incomplete/partial/attention 等需要处理的结果；1 为输入/运行错误；130 为中断。source collected、bridge returned、脚本 exit0 不表示模型质量通过，必须看具体状态字段。
+CLI 所有输出默认 JSON。0 表示命令正常完成；2 表示 fail/incomplete/partial/attention 以及自主任务的 `halt` 等需要处理的结果；1 为输入/运行错误；130 为中断。source collected、bridge returned、脚本 exit0 不表示模型质量通过，必须看具体状态字段。
 
 报告 envelope 必须包含当前 task-show 返回的 context 哈希、status、evidence 数组；pass 还要求 executed 为正整数（不是布尔值）、没有 failures/required_missing/skipped_required。环境、局部测量和阶段 loss 使用相同的必测覆盖原则。evidence 是 `artifact-add` 返回的对象 ID。报告由负责 Agent/人根据原始证据撰写；程序验证完整性，不声称能证明任意手填结论真实。
 
@@ -73,6 +73,25 @@ CLI 所有输出默认 JSON。0 表示命令正常完成；2 表示 fail/incompl
 | 公开交付 | public-export |
 
 参数以子命令 `--help` 为准。JSON 文件用 UTF-8；PowerShell 重定向可能带 BOM，读取器已兼容。远端命令避免把凭据放 argv/env 明文卡中，使用站点管理的认证设施。
+
+## 模块化能力与 Pipeline
+
+需要只调用一个能力或验证一份组合计划时，可以使用模块化入口：
+
+```bash
+hcu-trainflow --workspace .work/modular capability-list
+hcu-trainflow --workspace .work/modular pipeline-plan examples/quality-pipeline.json
+hcu-trainflow --workspace .work/modular capability-run profiling.tracelens examples/scenario-tracelens.json
+hcu-trainflow --workspace .work/task pipeline-next TASK_ID
+hcu-trainflow --workspace .work/task pipeline-default TASK_ID
+hcu-trainflow --workspace .work/task pipeline-run pipeline.json --task TASK_ID
+```
+
+需要"一次输入、之后无人值守"的完整任务时，用[站点契约生成器](../scripts/build_autonomous_task.py)生成 task/plan/命令卡与准入契约，再用 `flow-drive` 闭环；契约字段、worker 与停机告警见[自主任务](autonomous-task.md)。
+
+独立与任务态的 `capability-run`、`pipeline-run` 都保存运行记录、步骤和证据。已有 Flow 的任务只允许在 `work`/`repair` 时执行，可按配置登记报告；完整任务仍需通过 `flow-submit`、独立 review 和 `flow-advance`。合成质量模板须先替换为同一 Store 内的真实证据 ID。可运行 `python examples/run_modular_scenarios.py --project . --workspace .work/modular-demo` 自动准备合成原件，验证三个独立场景与组合；它不代表硬件或训练验收。Python 服务、输入绑定及 `--resume` 的身份检查见[模块化架构](modular-architecture.md)。
+
+需要从零串联环境检查、训练、独立 Trace、摘要分析和短基线验收时，使用 [基线 Pipeline 生成器](../examples/build_baseline_pipeline.py) 与[现场输入契约](modular-architecture.md#从零短基线的完整串联)。它生成标准 Pipeline JSON，仍由同一个 pipeline-run 入口执行；基线资格与候选优化收益分别判定。
 
 训练启动、成员观察、独立健康监测、离线图表与低频清理由 `scripts/` 的对应工具提供，见[训练观测](training-observation.md)、[成员观测](distributed-observation.md)、[长训守护](operations.md)、[图表](training-dashboard.md)和[工作区维护](workspace-maintenance.md)。它们不由上述 CLI 命令自动全部部署。
 

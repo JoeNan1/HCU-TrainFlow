@@ -13,12 +13,17 @@
 | 合成并行上下文 | [groups.json](groups.json)、[process-groups.json](process-groups.json) | 两个 rank 的 DP 示例；前者还含可用 rank，分别供采样计划与分析使用。真实任务需提供实际进程组 |
 | 合成性能输入 | [trace.json](trace.json)、[window.json](window.json)、[models.json](models.json) | 简化 GEMM 时间线、分析窗口与性能上限模型；模型中的峰值明确为测试值，不能作为 HCU 硬件参数 |
 | 合成 TraceLens 输入 | [tracelens-trace.json](tracelens-trace.json) | 演示 CPU op、HIP launch 与 GPU kernel 的关联字段；生成报告只说明接口能处理这份输入 |
+| 模块化 Pipeline 输入 | [quality-pipeline.json](quality-pipeline.json) | 一个只做合成 loss 对照的 Pipeline；替换 context 和 evidence 后才能用于真实任务。任务态运行可用 `--task` 登记步骤 artifact |
+| 自主任务站点契约 | [autonomous-site.json](autonomous-site.json) | 一次输入的四段契约（task/autonomy/plan/site）；用[生成器](../scripts/build_autonomous_task.py)写出 task/plan/命令卡/准入契约，见[自主任务](../docs/autonomous-task.md) |
+| 模块与子工作流 | [module-plan.json](module-plan.json) | 用功能子工作流（或 profile、模块列表）声明一次运行的来源与输入；`module-plan` 只校验接线并给出派生门禁，`module-run` 才执行，见[模块化拆分与子工作流](../docs/workflow-modules.md) |
 
 ## 怎么使用
 
 - 配置模板先复制到当前任务的私有工作空间，再按真实环境填写；不要将实际节点、凭据、日志和结果回填进本目录。
 - 合成输入可按[性能分析示例](../docs/profiling.md#输入契约)和[TraceLens 安装验证](../docs/integrations.md)试跑；输出写入任务目录，不能把演示报告当成真实优化证据。
 - 真实采集需重新确认模型/软件身份、并行组、shape、计时窗口及硬件参数；模板阈值也需要现场校准。
+- 模块化入口可以先校验 Pipeline，再执行合成能力：`hcu-trainflow --workspace .work/modular pipeline-plan examples/quality-pipeline.json`；独立与任务态运行都保留 run/step/evidence；任务态运行另经 Flow gate，不自动推进训练阶段。使用原始证据 ID 替换占位符后再执行。
+- 目录与子工作流入口可以先看目录、功能子工作流接口和派生门禁：`hcu-trainflow module-catalog`、`hcu-trainflow subworkflow-list`、`hcu-trainflow profile-list`、`hcu-trainflow module-plan examples/module-plan.json`；模块集无法接线时只报 `problems`，不会猜 bindings，也不会推进阶段。
 - systemd 示例仅提供 watcher 进程托管形式，现场告警、恢复负责人和 Agent 唤醒需按[运行与守护](../docs/operations.md)单独接入验收。
 
 ## 真实操作记录放哪里
@@ -31,3 +36,7 @@
 | 可迁移的工作方法和决策步骤 | `docs/` 与对应 Skill 的参考文档 |
 
 经验提炼遵守[知识收录规则](../docs/knowledge-architecture.md)和[训练经验记录](../docs/experience-knowledge.md)。实际任务记录与本目录的合成输入分别保留，不能用模板值填补缺失的实测数据。日常使用可直接从 `$hcu-trainflow` 入口描述任务，无需手工填写全部示例；CLI 接入见[快速开始](../docs/quickstart.md)。
+
+三个独立场景的模板见 [环境检查](scenario-environment.json)、[TraceLens 分析](scenario-tracelens.json) 和 [质量性能验收](scenario-quality.json)。运行 [软件组合示例](run_modular_scenarios.py) 可自动保留合成原件并验证单跑/串联；[HIP 基线](hip-runtime/axpy.hip) 与[契约](hip-runtime/contract.json)配合 [验证脚本](../scripts/validate_hip_runtime.py) 只在资源准入通过后执行。接口和恢复语义见[模块化架构](../docs/modular-architecture.md)。
+
+[基线 Pipeline 生成器](build_baseline_pipeline.py) 根据私有现场契约生成“环境→训练→独立 Trace→摘要分析→短基线验收”的完整 DAG；生成时不执行命令。字段与执行入口见[从零短基线串联](../docs/modular-architecture.md#从零短基线的完整串联)。它不预置模型或节点，也不把短基线当作优化收益证明。

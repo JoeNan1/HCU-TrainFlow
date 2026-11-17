@@ -53,7 +53,12 @@
 | 命令 | 作用 |
 | --- | --- |
 | `flow-start TASK PLAN` | 固定验收目标和循环预算，初始化人的文件与看板 |
-| `flow-next TASK` | 返回 work/repair/coordinate/review/advance/reconcile/human/completed/cancelled |
+| `flow-next TASK` | 返回 work/repair/coordinate/review/advance/reconcile/human 或自主任务的 halt，以及 completed/cancelled |
+| `flow-drive TASK [--max-steps N] [--no-advance]` | 自主任务的有界驱动：自动执行 `advance`，把 work/repair/review 交给调用方，遇到 `halt` 记录原因后停止 |
+| `flow-degradation TASK` | 查看自主任务已声明的降级阶梯、已用次数与剩余可执行项 |
+| `flow-degrade TASK ACTION --reason TEXT [--details-file FILE]` | 按策略边界应用一级降级（微批、重算、并行维度、层数、checkpoint 恢复）并留存证据 |
+| `budget-extend TASK FILE` | 在策略允许的额度内追加执行预算；FILE 含 operations/seconds/reason，超过硬顶或次数上限即拒绝 |
+| `halt-list [--all]` | 列出排队中的自主停机告警（有未处理项时退出码 2），供无人值守监控消费 |
 | `flow-submit TASK CANDIDATE` | 留存不可变候选并请求独立复核 |
 | `flow-review TASK REVIEW` | 校验结构、上下文、身份区分、目标覆盖及发现 |
 | `flow-review-failed TASK ROUND --reason TEXT` | 记录 reviewer 超时、无法解析或未输出等失败 |
@@ -68,8 +73,23 @@
 | `flow-guidance-ack TASK HASH --decision DECISION --note TEXT` | 对一版人的原文逐项回应；决定可为 applied/queued/needs-human/not-applicable |
 | `flow-guidance-record TASK FILE.json` | 留存会话中实际人的原文、作者与出处，进入待回应指导队列；不改人的文件、不自动授权 |
 | `flow-question-close TASK ID --guidance HASH --note TEXT` | 依据已读的实际回答关闭问题 |
+| `flow-question-resolve TASK ID FILE` | 仅自主任务：以 Agent 自己的决议（answer/source/note）关闭问题，归因为 `autonomy-policy`，不冒充人的回答 |
 
 `flow-next` 的 action 必须检查，命令退出 0 不意味着任务已经完成。`human` 是需要处理新指导或专家判断，不是强制每阶段找人审批。正常 review 由独立 Agent 完成。未配置独立 reviewer 时需要如实登记，不能让实施者改个名字假装独立。
+
+### 自主模式（无人工通道）
+
+TaskSpec 声明 `autonomy` 后，该任务没有人工通道，目标是让 Agent 无人值守串完整流程，而不是放宽验收。一次性输入、契约生成器、worker 契约与停机告警的完整用法见[自主任务](autonomous-task.md)：
+
+- `mode` 固定为 `autonomous`；`reviewers` 列出允许独立复核的 Agent 身份，复核仍须结构完整、身份不等于候选作者、发现分级、验收项全覆盖并附证据。
+- 指导不再阻塞：`GUIDANCE.md` 与会话记录照常采集和留存，但以 `autonomy-policy` 身份登记为 `not-applicable`（advisory），不冒充人的决定。
+- 阻塞问题先在 `question_answers` 的 `match` 命中问题 ID/标题/正文时用声明答案关闭，并留存回答、来源与策略指纹；未命中则保持 open 并 `halt`。主控可以自行决定的事项用 `flow-question-resolve` 记录自己的决议（answer/source/note），该记录归因为 `autonomy-policy` 并保留策略指纹，仍是 Agent 的决定而不是人的回答；它只解除问题，不改变报告、复核、门禁或预算。
+- 原本返回 `human` 的情形（未回答问题、复核失败数、轮次/停滞预算、上下文变化、任务 paused/blocked/failed）改为 `halt` 并带 `halt_reason`；`flow-drive` 记录 `flow-halted` 事件并以非零状态退出。
+- 门禁不变：报告必须存在且绑定当前候选与上下文，`pass` 仍要求真实执行与完整覆盖。自主策略不能把缺失、跳过或 `incomplete` 的证据变成通过，也不能复用旧复核。
+- `halt` 是带证据的终止，不是超时重试。设备、写入路径和操作预算须在创建任务与计划时预先声明；策略未覆盖的授权、硬件或方向性缺口同样以 `halt` 收口，需要新假设时另起任务或记录重规划。
+- **技术性失败不回人工**：普通失败重试本来就在 `repair` 回路内；显存不足、通信配置不可用等需要改配置时，按 `escalation.degrade_ladder` 声明过的动作与下限执行（微批下限、重算模式、可调并行维度、层数下限与代理缺口说明、checkpoint 恢复次数），用 `flow-degrade` 留痕，阶梯用尽才 `halt`。
+- **预算按级追加**：`escalation.budget_extension` 给出每次追加上限、追加次数与硬总上限；执行层按"声明预算 + 已批准追加"判定，超过硬顶直接拒绝，追加原因与账本均留痕。这是"可支取headroom"，不是"可自造预算"。
+- **验收只紧不松**：`acceptance_edit` 默认 `forbid`，重规划不得改动验收条款；可选 `add-only` 只允许追加新条款，不得修改或删除既有条款。放宽目标必须新建任务，由人重新陈述目标。
 
 ### PLAN.json
 
@@ -112,7 +132,7 @@
 
 哈希是 `artifact-add` 或报告写入返回的真实对象 ID，示例占位符不能使用。候选 manifest 保留代码快照、配置、依赖、采样和产物关系；`source-snapshot` 返回的 snapshot_id 是源清单指纹，使用时把其清单保存为 artifact，再将 artifact ID 填入 candidate.snapshot。报告必须写相同的 `candidate_snapshot`，并与当前 context、最新报告 ID 相符。新实验/代码候选需要对应验证；上下文换硬件/数据/验证契约则用 task-context 和 flow-replan。
 
-`reports` 由 `flow-next` 的 required_reports 指定。完整流程依次为环境、基线、分析、阶段质量/性能、扩容、完成报告。基线验收后，未发生相关变化时 `flow-next` 返回 `advance`、`target: profiling` 和 `review_reused: true`，直接 `flow-advance`；保留原独立 review 和 `flow-review-reused` 记录，不新建候选、重跑基线或消耗一轮审核。若报告被替换、指导/分工改变或 context/目标变化，则不复用。进入 training 所需 environment/stage-quality/scale 必须明确覆盖同一候选；可引用先前原始验收并解释依赖未变化的适用依据，不能只改 snapshot 字段让过期验证“通过”。
+`reports` 由 `flow-next` 的 required_reports 指定。完整流程依次为环境、基线、分析、阶段质量/性能、扩容、完成报告。任务声明了 `spec.profile` 时，required_reports 按该子工作流派生（只能更窄，profile 未覆盖的阶段回落全量门禁）；另有 `expected_evidence` 列出该阶段的**非门禁**证据（如适配记录、短基线资格），它只是提示，不阻挡推进。基线验收后，未发生相关变化时 `flow-next` 返回 `advance`、`target: profiling` 和 `review_reused: true`，直接 `flow-advance`；保留原独立 review 和 `flow-review-reused` 记录，不新建候选、重跑基线或消耗一轮审核。若报告被替换、指导/分工改变或 context/目标变化，则不复用。进入 training 所需 environment/stage-quality/scale 必须明确覆盖同一候选；可引用先前原始验收并解释依赖未变化的适用依据，不能只改 snapshot 字段让过期验证“通过”。
 
 提交后先由程序预检所需报告、快照、迭代测量及团队状态；缺项时 `flow-next` 返回 repair/coordinate，不先让 reviewer 审完才报错。修正后提交当前候选，独立审核与推进时仍重新校验，防止审查期间证据被替换。预检只能发现契约问题，不能代替内容审查。
 

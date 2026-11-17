@@ -159,3 +159,7 @@ Probe 自动首差分析是候选定位，不能代替因果确认。多 rank �
 通用边界参考 [PyTorch 数值精度](https://docs.pytorch.org/docs/2.11/notes/numerical_accuracy.html)、[可复现性](https://docs.pytorch.org/docs/2.11/notes/randomness.html)、[autograd 调试](https://docs.pytorch.org/docs/2.11/autograd.html#debugging-and-anomaly-detection)。这里核对的是 2.11 文档，实际命令/配置仍须匹配部署版本；CPU/NV/其他平台的文档不证明 HCU 分支已实现同样能力。
 
 更新 Skill 维护本页时，同时检查 Probe 的包/入口、config schema、hook 与异步落盘、compare/mapping/首差、训练和推理框架接入，以及三个阶段的阅读路径。必要时查最新源码/PR，普通查询不更新 HCU 大知识库。不要求预先验证所有模型/后端；当前登记的方法、离线回归和现场实测分别记录。
+
+## 组件级数值对照的模块边界
+
+`adaptation.numeric-equivalence` 按冻结契约逐组件（前向、反向、梯度、参数更新）比较基线样本与适配样本，输出每个组件的 `max_abs_diff`、`max_rel_diff` 与容差判定。它明确声明 `stage_equivalent=false`：组件级一致不证明阶段 loss 等价、不证明收敛、也不证明长训稳定。缺组件、长度不一致、非法数值都进 `required_missing`，不会被跳过；把局部结果当阶段结论需要另走质量门禁。

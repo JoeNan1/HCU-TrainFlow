@@ -2,6 +2,116 @@
 
 > 当前维护计划在下方；折叠区仅是历史开发快照，旧版本、旧名称和未同步的当时待办不作为现行操作指令。使用规范见 README、AGENTS.md 与对应 Skill/docs，实际发布以 Git 提交和标签为准。
 
+## 2026-11-17：把 profile 接进任务（第 3 步 / B6，当前任务）
+
+目标：让"分流"从计划层建议变成任务约束，同时保证门禁只能更窄、绝不消失。
+
+- [x] `spec.profile`（`{id, reason}` 必填、字段封闭）：`flow-start`/`replan` 校验存在性与 context 冲突，冲突即拒。
+- [x] `flow.required_reports` 按 profile 派生；未覆盖阶段回落全量 `flow.GATES`（fail-closed）；派生若更宽直接报错。
+- [x] `flow.next_step` 新增 `profile` 与 `expected_evidence`（非门禁证据提示，不阻挡推进）。
+- [x] `module-plan --stage <stage>`：按阶段切模块子集，输出可直接 `module-run`；adapt 阶段 = 环境就绪 + 执行 + 适配三件套。
+- [x] 适配模块 stage 移到 `prepared`（adapt 阶段），证据型报告不影响门禁派生。
+- [x] 生成器 `TASK_KEYS` 支持 `profile`；文档 contracts/collaboration/workflow-modules/autonomous-task 同步。
+- [x] 验证：新增 9 项回归，受影响子集 147 项通过；全量与安装检查见 progress.md。
+- [ ] 未验证：真实硬件上按 profile 走完整 adapt→…→scale_ready（仍缺现场授权与真实证据）。
+
+## 2026-11-17：适配子工作流（第 2 步）（已完成，保留记录）
+
+目标：让"适配"成为一个真正有内容的功能子工作流，而不是只有缩层代理校验。
+
+- [x] 模块 22 `adaptation.launch-parity`：上游/ HCU 启动要素逐一映射，缺映射、空依据、重复目标都报；不判断 port 是否跑通。
+- [x] 模块 23 `adaptation.config-diff`：适配前后有效配置差异 + 依据；无依据改动 → incomplete；依据提到未改动的 key 直接报错。
+- [x] 模块 24 `adaptation.numeric-equivalence`：组件级数值对照，`stage_equivalent=false`，缺组件/长度不一致不放过。
+- [x] 证据类型扩到 6 个（三种 `adaptation-*`），全部过滤于门禁派生之外。
+- [x] 子工作流 `adaptation`（启动映射 + 配置差异 + 组件数值），`adaptation-proxy` 保持独立；三个 profile 均挂载。
+- [x] `step_inputs`：同名输入的按步骤播种，避免 diff 与数值对照共用同一份 baseline。
+- [x] 文档与 route 页更新；验证见 progress.md。
+- [ ] 第 3 步：把适配子工作流接进 adapt 阶段的门禁派生与 `module-plan --stage`（与 B6 一起做）。
+
+## 2026-11-17：功能子工作流层（第 1 步）（已完成，保留记录）
+
+目标：按用户提出的结构把"模块 → 功能子工作流 → 流程 profile"分三层。功能子工作流（适配、分析、基线等）是模块组合，本身不是流程，没有阶段与门禁。
+
+- [x] `Subworkflow` 契约：`composition`（自动接线）与 `template`（现场形状固定的接线）两种，均不声明 stages/gates。
+- [x] 15 个功能子工作流：环境就绪、环境采集、源码交接、Megatron/纯 torch 基线、质量对照、短基线资格、代理校验、训练观测、hipprof 摘要、trace 归因、优化净收益、优化基准、TraceLens 全链（模板）、从零基线闭环（模板）。
+- [x] `interface()` 自动推导外部接口；`"*"` 约定让整体结果（execution.command → capability-result）可被自动绑定。
+- [x] profile 改为组合子工作流（`module_ids()` 展开去重）；旧 preset 名保留别名，`preset` 键继续可用。
+- [x] CLI `subworkflow-list`；`module-catalog` 同时输出接口与别名。
+- [x] 验证：新增 12 项回归；全量回归与文档检查见 progress.md。
+- [ ] 第 2 步：补适配模块（`adaptation.launch-parity`、`adaptation.config-diff`、`adaptation.numeric-equivalence`），让 `adaptation-proxy` 升为真正的适配子工作流。
+- [ ] 第 3 步：把适配子工作流挂进三个 profile 的 adapt 阶段。
+
+## 2026-11-17：第三个子工作流 `torch-native-llm`（B5）（已完成，保留记录）
+
+目标：纯 torch 大模型（torchtitan/nanotron 等）不再因为"没有 Megatron 日志解析器"而路由失败；分流只换日志摘要模块，不减少门禁。
+
+- [x] 新增 `training.summarize-torch`（模块 9）：声明式 `log_format`（`jsonl` 或 `pattern`，字段名可配），要求 `expected_steps`/`steady_start`/`timing_groups`/`min_samples_per_group`；不匹配行计入 `unparsable-log-lines`。
+- [x] 诚实边界：`pattern` 模式没有 meta 记录，就无法证明从零初始化与 profiler 关闭，摘要保留 `false` 并记入 `required_missing`；不猜、不补。
+- [x] 目录校验从"报告全局唯一"细化为"同引擎唯一"：`baseline` 由 Megatron（`engine=megatron`）与 torch（`engine=torch`）两个模块产出，标签互斥；profile 层仍禁止同集合内两个同报告产出者。
+- [x] 新增 profile `torch-native-llm`（20 模块，`stages` 全量），`torch-native-vision` 改用 torch 摘要，`analysis-only` 去掉日志摘要（与引擎无关，7 模块）。
+- [x] 路由：`{"engine":"torch","model_family":"llm"}` 唯一命中 `torch-native-llm`；前三个 profile 派生门禁与 `flow.GATES` 逐项相等。
+- [x] 文档：`workflow-modules.md` 更新到 21 模块 / 4 profile，并新增 §14 记录 B6 待办；`training-state-validation.md` 补 torch 日志声明格式与边界。
+- [x] 验证：新增 9 项回归；全量 1557 passed / 3 skipped（505.06 秒）；文档 208 页 / 102 CLI 示例 / 43 JSON 示例 0 issues；CLI 冒烟确认四个 profile 与 torch-llm 路由。
+- [ ] B6：把 profile 接进任务（`spec.profile`、`flow.required_reports` 按派生门禁、`module-plan --stage`），见 `docs/workflow-modules.md` §14。
+
+## 2026-11-16：模块化实现（B1–B4）（已完成，保留记录）
+
+目标：按已评审的 `docs/workflow-modules.md` 把 workflow 拆成 20 个可独立调用、可声明的模块；子工作流 = 模块子集 + 派生门禁。`full` 模式、旧 capability 名与 CLI 契约完全不变。
+
+- [x] B1 契约层 `catalog/`：`contracts.py`（闭合词表、report/stage/role/tags/volatile/route；`requires` 支持 `a|b` 可替代来源）、`registry.py`（20 模块 + 别名 + 4 preset）、`gates.py`（7 条派生规则）、`profiles.py`（3 profile + 确定性路由）、`plan.py`（自动接线与静态校验）。
+- [x] B1 门禁派生：`llm-megatron` 派生结果与 `flow.GATES` 逐项相等，由 `tests/test_module_catalog.py` 锁死；`stage-quality`/`scale`/`completion` 作为 Agent 撰写报告显式并集。
+- [x] B1 新增 capability：`execution.stdout-json`、`resource.lease`、`source.transfer`、`profiling.communication`、`optimization.change`、`optimization.benchmark`、`optimization.netgain`，全部只做确定性记账并自带 `limits` 声明。
+- [x] B2 `baseline-pipeline` 改为声明式 preset，`services.baseline_pipeline` 委托同一份接线；历史 8 步（id/capability/action/depends_on/bindings）由测试逐项锁定。
+- [x] B3/B4 三个 profile：`llm-megatron`(20)、`torch-native-vision`(16)、`analysis-only`(8，`stages=["profiling"]`)。发现设计稿"vision 无 scale"会砍掉训练准入证据，已改正为**分流只瘦模块、不瘦门禁**。
+- [x] CLI `module-catalog`/`module-plan`/`module-run`/`profile-list`/`profile-resolve`；`module-run` 复用 `RuntimeService`，`volatile` 由模块声明覆盖旧白名单（新增可选 `volatile_steps`，不传时行为不变）。
+- [x] 文档：`docs/workflow-modules.md` 改为实现态（契约、目录+能力映射、派生规则、profile、路由、编排、护栏、批次、缺口），同步 modular-architecture/architecture/examples README 与 `examples/module-plan.json`。
+- [x] 验证：新增 36 项回归；全量 1548 passed / 3 skipped（507.57 秒）；`check_documentation` 208 页 / 102 CLI 示例 / 43 JSON 示例 0 issues；`check_skill_resources` current。
+- [ ] 真实硬件上的子工作流验收：仍缺现场授权与真实训练/Trace 证据；合成回归只证明目录、接线与门禁一致。
+
+## 2026-11-16：自主模式（无人工通道）（已完成，保留记录）
+
+目标：在保留报告、独立复核、证据与预算门禁的前提下，让 Agent 无人值守串完整个流程；原来"等人"的分支改为带原因的 `halt`，并把决策来源显式归因给 `autonomy-policy`。
+
+- [x] TaskSpec 新增封闭 `autonomy` 策略（`mode=autonomous`、`reviewers`、`question_answers`），未知字段、空/重复评审身份与缺字段答案均报错。
+- [x] `flow.next_step` 新增 `halt`：采集到的指导以 advisory 留存（不冒充人的决定），未回答问题、复核失败预算、轮次/停滞预算、context 变化与 paused/blocked/failed 不再返回 `human`。
+- [x] `flow.resolve_question` + `flow-question-resolve`：自主任务用 Agent 自己的决议（answer/source/note）关闭问题，留存策略指纹与事件，只解除问题、不改门禁。
+- [x] `autopilot.drive` + `flow-drive`：有界循环自动执行 `advance`，把 work/repair/review 交回主控；`halt` 记录去重事件并以退出码 2 收口；`stop_report` 留存停机回执。
+- [x] `guard_execution` 在 `halt` 下拒绝继续派发命令；复核身份必须来自声明的 reviewer 池。
+- [x] 文档与 Skill 同步：AGENTS.md、contracts.md（TaskSpec）、collaboration.md（命令表与自主模式）、quickstart.md（退出码）、`skills/hcu-trainflow/SKILL.md`。
+- [x] 全量回归 1469 passed / 3 skipped，文档与 Skill 资源检查 current，本机安装同步并独立 `--check` current。
+- [x] 自主自救（第二轮）：`escalation.degrade_ladder` + `flow-degrade`/`flow-degradation` 让失败/OOM 沿声明阶梯修复；`escalation.budget_extension` + `budget-extend` 让预算按级追加并受硬顶约束；`acceptance_edit` 阻止自主重规划改写验收条款。
+- [x] 修复 `report_kind` 无证据时抛异常中断整次运行的问题，改为跳过并记录 `pipeline-report-skipped`。
+- [x] 第二轮验证：全量回归 1488 passed / 3 skipped（500.39 秒）；文档与 Skill 资源 current；CLI 冒烟覆盖降级、预算追加与放宽验收被拒。
+- [x] 第三轮①worker 契约：`autopilot.drive(worker=...)` 接受 `work`/`review` 两个方法；CLI `flow-drive --worker module:factory`；worker 返回 `None`→`worker-declined`，抛 `Handoff`→停机并保留原因，其他异常记 `worker-error` 达上限停机，候选反复被 gateway 拒记 `repair-not-converging`，避免空转烧预算。
+- [x] 第三轮②站点契约生成器：`scripts/build_autonomous_task.py` + `examples/autonomous-site.json`，一次输入写出 task/plan/命令卡/准入契约，`admission.context` 自动派生，命令卡用真实执行契约校验，固定拒绝覆盖已存在 bundle。
+- [x] 第三轮③停机告警接线：`flow-halted` 事件进入现有 outbox（`channel=agent`），新增 `halt-list`（有待处理项退出码 2），可经 `inbox claim/complete` 销账。
+- [x] 第三轮④ halt 自带选项菜单：`flow.halt_options` 在 halt 判定中返回可用降级动作（含已用次数）、预算剩余额度、可自决的阻塞问题与必须升级的四类；`flow-drive` 结果同样携带，Agent 据此自决，不必另查清单。
+- [x] 第三轮文档：新增 `docs/autonomous-task.md`（一次输入→生成→启动→halt 处置矩阵→告警），并在 quickstart、collaboration、examples/README 建立入口。
+- [x] 第三轮验证：全量回归 1508 passed / 3 skipped（501.24 秒）；文档 207 页与 Skill 资源 current；本机安装同步并独立 `--check` current；CLI 冒烟覆盖生成器→task-create→flow-start→flow-drive→halt-list。
+
+## 2026-11-05：模块化能力与可组合 Pipeline 重构（已完成，保留记录）
+
+目标：保持现有 full workflow、Task/Artifact/Review/Gate 和 CLI 兼容，拆分 kernel、能力模块、执行适配器与 Pipeline 编排，并提供独立能力入口。
+
+- [x] 完成当前架构/边界盘点，确认以能力为主模块、步骤为 Pipeline 编排、执行后端为 adapter；不拆微服务。
+- [x] 新增 `kernel` 契约：CapabilityContext/Request/Result、PipelineStep/Plan/Runner。
+- [x] 新增 capability registry 及 environment/profile/quality 的兼容 facade。
+- [x] 新增 execution adapter facade、`capability-*`/`pipeline-*` CLI 入口和合成 Pipeline 示例。
+- [x] 补充模块化架构文档、examples 和契约回归测试。
+- [x] 将 adaptation/optimization/scaling/observation 接入统一 capability 生命周期。
+- [x] 将 Pipeline Runner 与持久 flow、报告登记、review/gate 和 resume/reconcile 完整接合。
+- [x] 将模块化 CLI 注册与分发抽到 `command_registry.py`，保留旧命令契约；完成完整 CPU 回归、知识/文档检查。
+- [x] 按用户授权在 `/root/.codex/skills` 首次安装六个 TrainFlow Skill，再执行 `sync_local_install.py`；三个 Hygon Skill 由其源仓安装器安装并核对文件哈希。
+- [x] 获取锁定 TraceLens、安装三个 Python 包和所需运行依赖；扩展外部绑定以直接复用 `/home/cuda-optimized-skill`，保留 HCU-Knowledge 既有绑定。
+- [x] 完成首轮独立 `sync_local_install.py --check` 和全量回归记录（1368 passed / 3 skipped）。
+- [x] 按用户选择复用其 GitLab fork，在本机批准该来源并证明包含锁定提交；已完整恢复 1255 个 LFS 文件，完整证据校验通过。
+- [x] 完成 fork 来源机制变更后的全量回归（1378 passed / 3 skipped）、本机索引、实际本地查询与完整 11 个 Skill 安装。
+- [x] 完成本轮本机同步及独立 `--check` 验收；六个 TrainFlow Skill 与包同步为 current，全部 11 个 Skill 独立检查 current。
+
+已有模块化验证：新模块 `py_compile`、模块化契约测试（13 passed）、`init`、`flow-start/flow-next`、`pipeline-next/default`、`capability-list`、`pipeline-plan/run`、任务态 artifact/report/resume/context-revision smoke 均通过。最终 fork 绑定验证：106 项依赖/安装回归、完整 CPU 回归（1378 passed / 3 skipped）、知识校验（22185 pages / 24 sources / 0 errors）、206 页文档检查和 Skill 资源检查通过。本轮 `pip check` 和三个包的实际导入路径验证通过；此前 TraceLens CLI 帮助和 13 个能力入口已验证。完整安装回执为 ready，全部 11 个 Skill 及绑定经安装器和独立 `--check` 验收，本机同步及独立检查均为 current。详细回执位于 `.work/setup/installation-review.json`。
+
+恢复安装：用户重新克隆的 fork 保留相同锁定提交。新增 `--bind-origin`，将显式批准的来源与 checkout 路径绑定，仅写本机配置并验证锁定提交祖先关系。fork 的 LFS 下载已成功，缺失文件和指针均为零；bootstrap 的 restore-derived、validate --full、publish --local-build 全部通过，索引包含 29497 条资料 / 932404 个分块。doctor 的 local_ready/index_ready/index_current 均为 true，snapshot_mode=current；实际 RCCL topology 本地查询返回 3 条相关结果。完整 setup 复用该索引，成功补齐两个知识库 Skill。
+
 ## 2026-11-04：对齐 HCU-Knowledge v0.5.7 后的独立全量维护
 
 阶段一已经独立交付：HCU-Knowledge main `c08470f7c1032f8ad9f072a161c687d2a6b50a3b` / annotated `v0.5.7`，GitHub 主仓与 GitLab 备仓 refs 一致，显式 LFS 上传、两端新增材料独立下载及哈希验证通过。该阶段工作区干净，以下维护不修改大库、不混入阶段一提交。
@@ -461,3 +571,27 @@ No automatic big knowledge-base update. No new public release. No artificial Age
 Scope: TrainFlow checkout and .private/development/TraceLens (separate development repository); task evidence .work/tracelens-parity-20261013; remote /cfs/yuguo/tracelens-parity-20261013 after mount verification. User authorizes code, remote experiments, commits/pushes. Use idle devices only; do not update HCU-Knowledge; no historical author rewrite; approximate workload-specific roofline suffices, deep modeling only for unexplained limits.
 
 </details>
+
+## 2026-11-05：第二阶段公共运行服务与独立场景
+
+用户已批准实施第二阶段计划。写入范围限本 checkout（源码、示例、测试、文档和 .work/modular-phase2 私有证据），以及结束时同步已选 /root/.codex/skills 的受管副本；外部知识库、CUDA skills 与锁定 TraceLens checkout 只读。使用现有 DTK，不安装 PyTorch或更改系统环境。
+
+- [x] 提取 RuntimeService，统一 CLI/Python、独立持久化和安全恢复。
+- [x] 完善环境采集、真实 TraceLens 文件分析、质量性能综合验收及显式输出绑定。
+- [x] 完成失败/中断/上下文/输入变化/门禁回归及 HIP 编译/只读资源资格检查。
+- [ ] HIP 主动设备验收：blocked，显存仍大量分配且进程覆盖未知；不运行负载、不伪造训练结果。
+- [x] 完成项目规定检查、文档与本机同步及独立软件验收；硬件阻塞见上。
+
+按 AGENTS 的独立范围并行要求，场景 agent 只修改 capabilities/tests/test_scenarios.py/scenario examples；HIP agent 只修改 HIP harness/example/tests 和 .work 证据；主控负责服务、存储、CLI、集成与复核。
+
+## 2026-11-06：真实基线 Pipeline 闭环
+
+用户要求先完成工作流闭环。本轮由单主控执行，项目和安装写入范围沿用授权；任务映射见 `.work/qwen3-8b-workflow/lane-c-pipeline-closed-loop/workspace-boundaries.json`。A/B 历史 Store 不修改，源码/输入只读复用，新增远端 Lane C 与本地 Store 隔离。暂不优化模型或推进 B 链的 optimizing 门禁。
+
+- [x] 将 hipprof 转换接入 profiling.tracelens，新增输出封存与训练日志规范化能力。
+- [x] 增加显式短基线 qualification，禁止用自比较代表优化通过。
+- [x] 生成单次八步 Pipeline；实际 CPU 命令及原生离线 TraceLens 验证成功、失败阻塞、同 run 恢复且训练只启动一次、输入变更拒绝。
+- [x] 独立 Lane C 完成真实 100-step 训练、短 Trace、摘要及验收。
+- [x] 完成项目检查、安装同步、证据审计和缺口状态更新。
+
+本机与目标 SSH 容器 boot_id 相同，真实性能测量期间不运行重型 CPU 回归。首次现场环境采集因 ip 命令缺失失败，下游零启动；失败回执保留，sysfs 修复后用新 operation 核销重试。

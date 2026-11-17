@@ -68,6 +68,8 @@ An agentic workflow for end-to-end large-model training adaptation, optimization
 
 [工程介绍](docs/project-overview.md) · [详细流程图与验收规则](docs/workflow-map.md)
 
+当前代码同时提供模块化能力入口和可组合 Pipeline 入口，适合只做环境、profile、质量或观察，也可组合为完整流程；见[模块化架构](docs/modular-architecture.md)。这些入口复用现有证据与审核边界，不会绕过 full workflow 的 gate。
+
 ### 1. 环境检查与模型适配
 
 - **发现并验收现场**：确认节点与卡的授权、占用、拓扑、镜像、DTK 和关键库版本，复用当前 Cluster Manager、run_nhc、检查脚本及 DTK 工具。检查健康、GEMM、HBM、机内互联和机间通信，逐项对照有来源的预期；缺项、性能差距和排查结果明确记录，需要时请专家介入。
