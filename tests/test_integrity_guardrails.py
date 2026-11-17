@@ -89,6 +89,43 @@ def test_a_public_artifact_may_be_shared_between_tasks(tmp_path):
                     "source": {"artifact": shared, "path": ["proof"]}}]})["status"] == "pass"
 
 
+def test_backfill_recovers_attribution_for_older_reports(tmp_path):
+    store = setup(tmp_path, name="legacy")
+    owner = store.task("task")
+    proof = store.put(b"legacy proof")
+    store.report("task", "environment", {
+        "context": owner["context"], "status": "pass", "executed": 1, "evidence": [proof],
+        "claims": [{"id": "c1", "statement": "Environment verified",
+                    "stage": "environment_checked",
+                    "source": {"artifact": proof, "path": ["proof"]}}]})
+    # A store written before attribution existed has no owner for that evidence.
+    with store.db() as db:
+        db.execute("DELETE FROM events WHERE kind='artifact-claimed'")
+    assert store.artifact_tasks(proof) == set()
+
+    assert store.attribute_evidence()["attributed"] == 1
+    assert store.artifact_tasks(proof) == {"task"}
+    assert store.attribute_evidence()["attributed"] == 0  # idempotent
+
+    borrower = setup(tmp_path, name="legacy", task_id="borrower",
+                     context={"source": "second", "engine": "megatron", "model_family": "llm"})
+    task = borrower.task("borrower")
+    with pytest.raises(FlowError):
+        borrower.report("borrower", "environment", {"context": task["context"], "status": "pass",
+                                                    "executed": 1, "evidence": [proof]})
+
+
+def test_the_brief_hash_is_stable_until_the_decision_changes(tmp_path):
+    store = setup(tmp_path)
+    first = flow.brief_token(store, "task")
+    assert flow.brief_token(store, "task") == first
+    flow.brief(store, "task")  # reading a brief is not a state change
+    assert flow.brief_token(store, "task") == first
+    flow.start(store, "task", {"acceptance": {"result": "A different agreed result"}},
+               reason="fixture replan for the stability check")
+    assert flow.brief_token(store, "task") != first
+
+
 def test_claim_for_unserved_stage_is_rejected(tmp_path):
     store = setup(tmp_path, profile={"id": "analysis-only", "reason": "read-only analysis"},
                   mode="analyze", context={"source": "fixture", "engine": "megatron"},

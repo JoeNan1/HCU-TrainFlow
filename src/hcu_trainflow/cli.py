@@ -57,6 +57,7 @@ def parser():
     cmd("artifact-read", "sha", "destination")
     q = cmd("report-add", "task", "kind", "file"); q.add_argument("--brief-hash", help="flow-brief hash this report was written against")
     cmd("report-verify", "task", "kind")
+    q = cmd("evidence-backfill"); q.add_argument("task", nargs="?", help="Limit the backfill to one task")
     q = cmd("lease-acquire", "resource", "owner"); q.add_argument("--ttl", type=float, default=300)
     q = cmd("lease-renew", "file"); q.add_argument("--ttl", type=float, default=300)
     cmd("lease-release", "file")
@@ -238,6 +239,8 @@ def execute(a):
     if c == "report-verify":
         from . import integrity
         return integrity.verify(store, a.task, a.kind)
+    if c == "evidence-backfill":
+        return store.attribute_evidence(getattr(a, "task", None))
     if c == "lease-acquire": return store.lease(a.resource, a.owner, a.ttl)
     if c == "lease-renew": return store.renew(read_json(a.file), a.ttl)
     if c == "lease-release": return store.release(read_json(a.file))

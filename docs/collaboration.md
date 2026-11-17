@@ -57,6 +57,7 @@
 | `flow-brief TASK [--notes FILE]` | 由存储拼装当前状态的一页摘要与 `brief_hash`；换会话、长任务每轮开始都先取一次，`--notes` 只作附注 |
 | `flow-align TASK` | 从存储的 plan 重新导出目标/验收/profile/阶段，列出 delta；有漂移即 `drift`，需 `flow-replan` 记理由 |
 | `report-verify TASK KIND` | 对已登记报告重跑引用/数值/流程/范围四类校验，列出问题且不改状态 |
+| `evidence-backfill [TASK]` | 从已登记报告正文补写证据归属事件，让旧 store 也能拒绝借用；幂等，重复执行不重复写 |
 | `flow-drive TASK [--max-steps N] [--no-advance]` | 自主任务的有界驱动：自动执行 `advance`，把 work/repair/review 交给调用方，遇到 `halt` 记录原因后停止 |
 | `flow-degradation TASK` | 查看自主任务已声明的降级阶梯、已用次数与剩余可执行项 |
 | `flow-degrade TASK ACTION --reason TEXT [--details-file FILE]` | 按策略边界应用一级降级（微批、重算、并行维度、层数、checkpoint 恢复）并留存证据 |

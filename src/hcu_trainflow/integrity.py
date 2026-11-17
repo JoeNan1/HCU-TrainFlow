@@ -25,6 +25,26 @@ SOURCE_FIELDS = {"artifact", "path"}
 TOLERANCE = 1e-9
 
 
+def artifact_owners(db, sha):
+    """Tasks already attributable for a retained object (see Store.artifact_tasks).
+
+    Kept next to the claim checks so a read-only audit and the write path ask
+    exactly the same question.
+    """
+
+    tasks = {row[0] for row in db.execute(
+        "SELECT DISTINCT task FROM events WHERE task IS NOT NULL"
+        " AND json_extract(payload,'$.artifact')=?", (sha,))}
+    tasks |= {row[0] for row in db.execute(
+        "SELECT DISTINCT r.task FROM pipeline_steps s JOIN pipeline_runs r ON r.id=s.run"
+        " WHERE s.artifact=? OR s.report=?", (sha, sha))}
+    tasks |= {row[0] for row in db.execute(
+        "SELECT DISTINCT task FROM operations WHERE task IS NOT NULL"
+        " AND (json_extract(result,'$.artifact')=?"
+        " OR json_extract(result,'$.evidence')=?)", (sha, sha))}
+    return {task for task in tasks if task}
+
+
 def _stage_scope(task):
     """Stages the task's declared profile serves; every stage when undeclared."""
 

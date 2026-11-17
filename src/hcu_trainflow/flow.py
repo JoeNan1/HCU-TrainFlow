@@ -643,10 +643,22 @@ def brief_state(store, tid):
     }
 
 
-def brief_token(store, tid):
-    """Fingerprint of the current state; a write may be bound to it."""
+BRIEF_TOKEN_FIELDS = ('task', 'state', 'revision', 'context', 'objective', 'acceptance',
+                      'profile', 'autonomous', 'target', 'required_reports',
+                      'expected_evidence', 'invariants', 'candidate', 'open_questions',
+                      'budget', 'degradation')
 
-    return fingerprint(brief_state(store, tid))
+
+def brief_token(store, tid):
+    """Fingerprint of the decision state a write may be bound to.
+
+    Only the fields that change *what the next action must be* take part: the
+    evidence inventory and the recent-event tail move with every step and would
+    otherwise turn an ordinary report into a false ``stale-brief``.
+    """
+
+    body = brief_state(store, tid)
+    return fingerprint({key: body[key] for key in BRIEF_TOKEN_FIELDS})
 
 
 def verify_brief(store, tid, expected):
@@ -672,7 +684,7 @@ def brief(store, tid, notes=None):
             'options': decision.get('options'),
             'reads': ['docs/skill-reading-map.md', 'skills/' + skill + '/SKILL.md'],
             'notes': notes or [],
-            'brief_hash': fingerprint(body)}
+            'brief_hash': brief_token(store, tid)}
 
 
 def align(store, tid):

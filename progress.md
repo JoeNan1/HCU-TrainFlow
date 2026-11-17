@@ -625,3 +625,12 @@ HCU-Knowledge阶段已提交3829ef06、tag v0.5.6，两远端核对current且工
 - **交接协议**：`agent-send` 的 handoff 必须带 `{brief_hash, evidence_ids, open_questions}`，`evidence_ids ⊆ evidence`，用状态而不是叙述交接。
 - 文档：`contracts.md`（ReportEnvelope.claims、StateBrief 与 turn 绑定）、`collaboration.md`（命令表 + 每轮的状态锚点）、`workflow-modules.md` §10 护栏表 +5 行、协调器 `SKILL.md`（每轮先读 brief、数字写 claims）。
 - 验证：新增 23 项回归；全量 **1610 passed / 3 skipped**（516.22 秒）；`validate_knowledge` 22185 页 / 24 来源 / 0 errors；文档 208 页 / 107 CLI 示例 / 44 JSON 示例 0 issues；Skill 资源 current；本机安装同步后独立 `--check` current。
+
+## 2026-11-17：用真实历史数据验证护栏（精度审计）
+
+- 新增 `scripts/audit_report_history.py`：以 `mode=ro` 只读打开 store，用与写入路径同一套 `integrity` 检查重验已登记报告；大对象只核存在与大小，不重复摘要。
+- **精度（误报）**：对 5 个真实 store（Qwen3 工作流各 lane）共 **17 份真实报告、5 个真实任务**审计，**0 条被误判**。旧任务未声明 profile，claims 不强制，因此这一轮验证的是"新规则不误伤历史结论"。
+- **覆盖面（真问题）**：同一批 store 里有 **178 条证据处于无主状态**（73/35/4/63/3）。原因是报告写在归属机制之前，`artifact-claimed` 事件不存在。用真实 store 复本做"第二任务借真实证据"的回放：**第一次竟然通过了**——借用检查对旧数据完全是空的。
+- 补 `evidence-backfill [TASK]`：从已登记报告正文回填归属事件，幂等；回填后同一回放变为 `Evidence ... belongs to another task`。审计脚本同时报告每个 store 的无主证据数，便于判断是否要先回填。
+- 顺带修正 brief 哈希口径：只对"决定下一步动作"的字段取指纹（目标、验收、context、state/revision、profile、invariants、候选、未决问题、预算、降级），不含证据清单与最近事件尾部——否则每写一份报告都会挪动哈希，把正常步骤变成误报的 `stale-brief`。新增两条回归：同状态同哈希、读 brief 不改哈希、重规划必变。
+- 验证：全量 **1612 passed / 3 skipped**（525.71 秒）；文档 208 页 0 issues；Skill 资源 current；本机安装同步后 `--check` current。

@@ -459,18 +459,10 @@ class Store:
         to another task may not be cited here.
         """
 
+        from .integrity import artifact_owners
+
         with self.db() as db:
-            tasks = {row[0] for row in db.execute(
-                "SELECT DISTINCT task FROM events WHERE task IS NOT NULL"
-                " AND json_extract(payload,'$.artifact')=?", (sha,))}
-            tasks |= {row[0] for row in db.execute(
-                "SELECT DISTINCT r.task FROM pipeline_steps s JOIN pipeline_runs r ON r.id=s.run"
-                " WHERE s.artifact=? OR s.report=?", (sha, sha))}
-            tasks |= {row[0] for row in db.execute(
-                "SELECT DISTINCT task FROM operations WHERE task IS NOT NULL"
-                " AND (json_extract(result,'$.artifact')=?"
-                " OR json_extract(result,'$.evidence')=?)", (sha, sha))}
-        return {task for task in tasks if task}
+            return artifact_owners(db, sha)
 
     def artifact_public(self, sha):
         """Public objects are the declared way to share evidence across tasks."""
@@ -478,6 +470,34 @@ class Store:
         with self.db() as db:
             row = db.execute("SELECT visibility FROM artifacts WHERE id=?", (sha,)).fetchone()
         return bool(row) and row[0] == "public"
+
+    def attribute_evidence(self, tid=None):
+        """Backfill attribution for evidence recorded before it was tracked.
+
+        Reports written before attribution existed still name their evidence in
+        the body, so the owner can be recovered from them. Idempotent: an object
+        that already has a claim event for this task is skipped.
+        """
+
+        with self.db() as db:
+            db.execute("BEGIN IMMEDIATE")
+            query = "SELECT task,kind,artifact FROM reports"
+            rows = db.execute(query + (" WHERE task=?" if tid else ""),
+                              ((tid,) if tid else ())).fetchall()
+            written = 0
+            for row in rows:
+                body = json.loads(self.artifact(row["artifact"]))
+                for sha in body.get("evidence") or []:
+                    known = db.execute(
+                        "SELECT 1 FROM events WHERE task=? AND kind='artifact-claimed'"
+                        " AND json_extract(payload,'$.artifact')=?",
+                        (row["task"], sha)).fetchone()
+                    if known:
+                        continue
+                    self.event(db, row["task"], "artifact-claimed",
+                               {"artifact": sha, "kind": row["kind"], "backfilled": True})
+                    written += 1
+            return {"reports": len(rows), "attributed": written}
 
     def report(self, tid, kind, value, *, expected_revision=None, agent_authored=True):
         task = self.task(tid)

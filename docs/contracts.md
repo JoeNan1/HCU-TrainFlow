@@ -102,11 +102,15 @@ Graph 关联得到的 CPU 输入形状是调用上下文，不自动等于每个
 
 协作循环还要求 candidate_snapshot 与候选清单 artifact 相同。候选、独立 review、目标与人的回复契约见 [协作循环](collaboration.md)；不要只调用 task-transition 跳过已登记的 review。
 
-`report-add` 另外接受可选的 `claims`，字段封闭：`{id, statement, stage?, value?, source?: {artifact, path}, candidate_snapshot?}`。登记时程序机械校验四类问题——**引用**（被引对象存在，且不属于其他任务；`public` 对象可按共享基线跨任务引用）、**数值**（`value` 与 `path` 处的原值一致，浮点按 1e-9 相对容差，布尔不与数字互通）、**流程**（`stage` 必须是该任务 profile 覆盖的阶段）、**范围**（`candidate_snapshot` 必须等于报告快照）——任一不满足即拒绝登记。声明了 `spec.profile` 的任务，pass 的**由 Agent 撰写**报告必须给出 claims；capability/Pipeline 自己算出的报告（`agent_authored=false`）不强制，但它写出的 claims 照旧校验；未声明 profile 的旧任务仍可省略。`report-verify TASK KIND` 可对已登记报告重跑同一套校验并列出问题，不修改任何状态。
+`report-add` 另外接受可选的 `claims`，字段封闭：`{id, statement, stage?, value?, source?: {artifact, path}, candidate_snapshot?}`。登记时程序机械校验四类问题——**引用**（被引对象存在，且不属于其他任务；`public` 对象可按共享基线跨任务引用）、**数值**（`value` 与 `path` 处的原值一致，浮点按 1e-9 相对容差，布尔不与数字互通）、**流程**（`stage` 必须是该任务 profile 覆盖的阶段）、**范围**（`candidate_snapshot` 必须等于报告快照）——任一不满足即拒绝登记。声明了 `spec.profile` 的任务，pass 的**由 Agent 撰写**报告必须给出 claims；capability/Pipeline 自己算出的报告（`agent_authored=false`）不强制，但它写出的 claims 照旧校验；未声明 profile 的旧任务仍可省略。
+
+归属来自记录该对象的事件、Pipeline 步骤或操作结果。本规则生效之前写入的 store 没有这些记录，证据因此是"无主"的——`evidence-backfill [TASK]` 从已登记报告正文补写归属（幂等），补写前借用检查对这些对象不生效；`scripts/audit_report_history.py` 会报告每个 store 还有多少条无主证据。`report-verify TASK KIND` 可对已登记报告重跑同一套校验并列出问题，不修改任何状态。
 
 ## StateBrief 与 turn 绑定
 
 `flow-brief TASK` 由存储拼装当前状态的一页摘要：目标与验收指纹、context、state/revision、profile、`invariants`（门禁、acceptance_edit 策略、预算硬顶）、candidate 快照、可用证据 ID、未决问题、预算与降级剩余、最近事件与阅读入口，并返回 `brief_hash`。它不接受任何作为判定的总结：agent 的 `--notes` 只作附注保留，不改变门禁、报告要求或预算，所以"摘要里说过了"不构成任何约束。
+
+`brief_hash` 覆盖的是**决定下一步动作的那部分状态**（目标、验收、context、state/revision、profile、门禁不变量、候选快照、未决问题、预算与降级），不含证据清单与最近事件尾部——否则每写一份报告都会把哈希挪走，把正常步骤变成误报的 `stale-brief`。
 
 `flow-submit TASK FILE --brief-hash H` 与 `report-add TASK KIND FILE --brief-hash H` 用 H 绑定"这次动作基于哪一版状态"；状态已变返回 `stale-brief`。自主任务（`spec.autonomy`）提交候选必须带 brief 哈希，缺省即 `unverified-turn`：无人监督时不允许凭记忆推进。`flow-next` 的输出同时带 `invariants`，每次决策重新下发，而不是复用会话里的旧值。
 
