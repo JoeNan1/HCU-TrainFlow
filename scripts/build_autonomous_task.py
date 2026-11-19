@@ -21,18 +21,12 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'src'))
 from hcu_trainflow import flow
 from hcu_trainflow.core import FlowError, fingerprint, validate_spec
-from hcu_trainflow.execution import command_plan
 
 
 SECTIONS = {'task', 'autonomy', 'plan', 'site'}
 TASK_KEYS = {'task_id', 'mode', 'objective', 'context', 'permissions',
              'recovery_owner', 'external_job', 'budget', 'profile'}
 SITE_KEYS = {'ssh_target', 'container', 'cwd', 'commands', 'devices', 'occupancy', 'leases'}
-COMMAND_KEYS = {'argv', 'env', 'timeout_seconds', 'basis', 'cwd', 'activation'}
-DEVICE_KEYS = {'node', 'device', 'identity', 'idle_memory_bytes',
-               'memory_tolerance_bytes', 'max_utilization_pct', 'basis'}
-OCCUPANCY_KEYS = {'max_age_seconds', 'min_observations', 'quiet_period_seconds',
-                  'max_sample_gap_seconds', 'shared_resources'}
 
 
 def _object(value, name, allowed):
@@ -45,19 +39,10 @@ def _object(value, name, allowed):
 
 
 def _card(name, command, site):
-    _object(command, 'command ' + str(name), COMMAND_KEYS)
-    card = {'schema_version': 1, 'backend': 'ssh-docker',
-            'ssh_target': site.get('ssh_target'), 'container': site.get('container'),
-            'cwd': command.get('cwd', site.get('cwd')), 'argv': command.get('argv'),
-            'env': command.get('env', {}), 'timeout_seconds': command.get('timeout_seconds'),
-            'basis': command.get('basis')}
-    if command.get('activation'):
-        card['activation'] = command['activation']
-    # Validate the real execution-card contract instead of reporting it later.
-    command_plan(card)
-    if not isinstance(name, str) or not name.strip():
-        raise FlowError('Command names must be nonempty')
-    return card
+    # Shared with the intake checker so a document that passes one cannot fail
+    # the other; the card contract itself is validated there too.
+    from hcu_trainflow import intake
+    return intake.command_card(name, command, site)
 
 
 def build(site, *, require_autonomy=True):
@@ -87,15 +72,9 @@ def build(site, *, require_autonomy=True):
         raise FlowError('At least one execution command is required')
     cards = {name: _card(name, command, site_block) for name, command in commands.items()}
 
-    devices = site_block.get('devices')
-    if not isinstance(devices, list) or not devices:
-        raise FlowError('At least one admitted device is required')
-    for device in devices:
-        _object(device, 'device', DEVICE_KEYS)
-        missing = DEVICE_KEYS - set(device)
-        if missing:
-            raise FlowError('device is missing fields: ' + ', '.join(sorted(missing)))
-    occupancy = _object(site_block.get('occupancy') or {}, 'occupancy', OCCUPANCY_KEYS)
+    from hcu_trainflow import intake
+    devices = intake.validate_devices(site_block.get('devices'))
+    occupancy = intake.validate_occupancy(site_block.get('occupancy'))
     context = fingerprint(spec['context'])
     admission = {'schema_version': 1, 'context': context, 'devices': devices, **occupancy}
 
@@ -110,7 +89,11 @@ def build(site, *, require_autonomy=True):
             'leases': leases, 'context': context}
 
 
-def _write(path, value):
+def _write(path, value, root=None):
+    if root is not None and not path.resolve().is_relative_to(Path(root).resolve()):
+        # Defence in depth: card names are slugs, but nothing may land outside
+        # the bundle directory a reviewer looked at.
+        raise FlowError('Refusing to write outside the bundle: ' + str(path))
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open('x', encoding='utf-8') as stream:  # never replace a reviewed bundle
         json.dump(value, stream, ensure_ascii=False, indent=2)
@@ -136,21 +119,22 @@ def next_steps(task_id, output, lease_entries=()):
 def _write_bundle(output, bundle, extras=None):
     """Write one reviewed bundle; refuses to replace existing files."""
 
-    written = {'task.json': _write(output / 'task.json', bundle['task']),
-               'plan.json': _write(output / 'plan.json', bundle['plan']),
-               'admission.json': _write(output / 'admission.json', bundle['admission'])}
+    root = output.resolve()
+    written = {'task.json': _write(output / 'task.json', bundle['task'], root),
+               'plan.json': _write(output / 'plan.json', bundle['plan'], root),
+               'admission.json': _write(output / 'admission.json', bundle['admission'], root)}
     for name, card in bundle['cards'].items():
-        written['cards/' + name + '.json'] = _write(output / 'cards' / (name + '.json'), card)
+        written['cards/' + name + '.json'] = _write(output / 'cards' / (name + '.json'), card, root)
     for name, contract in (extras or {}).get('contracts', {}).items():
         if contract is not None:
             written['contracts/' + name + '.json'] = _write(output / 'contracts' / (name + '.json'),
-                                                             contract)
+                                                             contract, root)
     if extras and extras.get('lease_entries'):
-        written['leases.json'] = _write(output / 'leases.json', extras['lease_entries'])
+        written['leases.json'] = _write(output / 'leases.json', extras['lease_entries'], root)
     inputs = {key: extras[key] for key in ('observation', 'paths', 'source')
               if extras and extras.get(key)}
     if inputs:
-        written['inputs.json'] = _write(output / 'inputs.json', inputs)
+        written['inputs.json'] = _write(output / 'inputs.json', inputs, root)
     return written
 
 

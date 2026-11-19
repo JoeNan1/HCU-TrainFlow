@@ -124,6 +124,60 @@ def test_task_budget_may_not_exceed_the_authority_envelope():
         intake.expand(value)
 
 
+def test_a_partial_task_budget_keeps_the_envelope_dimensions():
+    """Narrowing one dimension must not drop the other one to infinity."""
+
+    value = document()
+    value["tasks"][0]["budget"] = {"max_operations": 5}
+    assert intake.check(value)["status"] == "pass"
+    bundle = intake.expand(value, "env-only")[0]
+    assert bundle["task"]["budget"] == {"max_operations": 5, "max_seconds": 259200}
+
+
+def test_a_task_budget_field_outside_the_envelope_is_rejected():
+    value = document()
+    value["authority"]["budget"] = {"max_operations": 240}
+    value["tasks"][0]["budget"] = {"max_seconds": 60}
+    result = intake.check(value)
+    assert any("does not define" in issue for issue in result["issues"])
+
+
+def test_empty_leases_are_allowed_and_validated():
+    value = document()
+    value["site"]["leases"] = []
+    assert intake.check(value)["status"] == "pass"
+    assert intake.expand(value)[0]["lease_entries"] == []
+    value["site"]["leases"] = [{"resource": "node-1", "owner": "", "ttl": 60}]
+    assert any("owner" in issue for issue in intake.check(value)["issues"])
+
+
+def test_a_command_name_cannot_escape_the_bundle_directory():
+    value = document()
+    value["site"]["commands"]["../../escaped"] = {"argv": ["bash", "x.sh"],
+                                                  "timeout_seconds": 60, "basis": "b"}
+    with pytest.raises(FlowError):
+        intake.load(value)
+
+
+@pytest.mark.parametrize("mutate,needle", [
+    (lambda value: value["site"]["devices"][0].pop("idle_memory_bytes"), "idle_memory_bytes"),
+    (lambda value: value["site"]["occupancy"].update({"bogus": 1}), "occupancy"),
+    (lambda value: value["site"]["commands"]["train"].pop("argv"), "argv"),
+])
+def test_check_rejects_what_the_generator_would_reject(mutate, needle):
+    """A document the checker passes must not fail later in the generator.
+
+    Structural problems make the document malformed, so both the library and
+    the checker refuse it rather than reporting a clean pass.
+    """
+
+    value = document()
+    mutate(value)
+    with pytest.raises(FlowError) as raised:
+        intake.check(value)
+    assert needle in str(raised.value)
+
+
 def test_unknown_contract_or_command_is_rejected():
     value = document()
     value["tasks"][1]["use"] = {"contracts": ["proxy"], "commands": ["profile"]}

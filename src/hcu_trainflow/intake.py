@@ -33,6 +33,13 @@ PLAN_KEYS = {"max_rounds", "max_stalled_rounds", "full_review_every",
 LEASE_KEYS = {"resource", "owner", "ttl"}
 
 DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+# A command name becomes a file name under cards/, so it may not contain a path.
+NAME = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
+COMMAND_KEYS = {"argv", "env", "timeout_seconds", "basis", "cwd", "activation"}
+DEVICE_KEYS = {"node", "device", "identity", "idle_memory_bytes",
+               "memory_tolerance_bytes", "max_utilization_pct", "basis"}
+OCCUPANCY_KEYS = {"max_age_seconds", "min_observations", "quiet_period_seconds",
+                  "max_sample_gap_seconds", "shared_resources"}
 
 
 def _object(value, name, allowed, *, required=()):
@@ -55,6 +62,98 @@ def _text(value, name):
     return value
 
 
+def _positive_number(value, name):
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
+        raise FlowError(name + " must be a positive number")
+    return value
+
+
+def _non_negative_int(value, name):
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise FlowError(name + " must be a non-negative integer")
+    return value
+
+
+def command_card(name, command, site):
+    """Build one execution card; the card contract itself is validated.
+
+    The name is also the file name under ``cards/``, so it has to be a slug:
+    anything with a separator could write outside the reviewed bundle.
+    """
+
+    _text(name, "command name")
+    if not NAME.fullmatch(name):
+        raise FlowError("Command names must be lowercase slugs: " + repr(name))
+    _object(command, "command " + name, COMMAND_KEYS,
+            required={"argv", "timeout_seconds", "basis"})
+    if not isinstance(command["argv"], list) or not command["argv"] or any(
+            not isinstance(item, str) or not item for item in command["argv"]):
+        raise FlowError("command " + name + ": argv must be a nonempty string array")
+    card = {"schema_version": 1, "backend": "ssh-docker", "ssh_target": site.get("ssh_target"),
+            "container": site.get("container"), "cwd": command.get("cwd", site.get("cwd")),
+            "argv": command["argv"], "env": command.get("env", {}),
+            "timeout_seconds": command["timeout_seconds"], "basis": command["basis"]}
+    if command.get("activation"):
+        card["activation"] = command["activation"]
+    from .execution import command_plan
+    command_plan(card)
+    return card
+
+
+def validate_devices(devices):
+    """Every admitted device states the same seven fields, with usable values."""
+
+    if not isinstance(devices, list) or not devices:
+        raise FlowError("At least one admitted device is required")
+    identities = []
+    for device in devices:
+        value = _object(device, "device", DEVICE_KEYS, required=DEVICE_KEYS)
+        _text(value["node"], "device.node")
+        _non_negative_int(value["device"], "device.device")
+        _text(value["identity"], "device.identity")
+        _non_negative_int(value["idle_memory_bytes"], "device.idle_memory_bytes")
+        _non_negative_int(value["memory_tolerance_bytes"], "device.memory_tolerance_bytes")
+        percent = value["max_utilization_pct"]
+        if (isinstance(percent, bool) or not isinstance(percent, (int, float))
+                or not 0 <= percent <= 100):
+            # Zero is meaningful: only a fully idle device passes.
+            raise FlowError("device.max_utilization_pct must be 0..100")
+        _text(value["basis"], "device.basis")
+        identities.append(value["identity"])
+    if len(set(identities)) != len(identities):
+        raise FlowError("devices must have unique identities")
+    return devices
+
+
+def validate_occupancy(value):
+    value = _object(value or {}, "occupancy", OCCUPANCY_KEYS)
+    for key in ("max_age_seconds", "min_observations", "quiet_period_seconds",
+                "max_sample_gap_seconds"):
+        if key in value:
+            _positive_number(value[key], "occupancy." + key)
+    if "shared_resources" in value and not isinstance(value["shared_resources"], list):
+        raise FlowError("occupancy.shared_resources must be a list")
+    return value
+
+
+def _budget(envelope, task):
+    """A task budget narrows the envelope; it may not add or drop a dimension."""
+
+    envelope = dict(envelope or {})
+    task_budget = dict(task or {})
+    for name, value in {**envelope, **task_budget}.items():
+        if name not in {"max_operations", "max_seconds"}:
+            raise FlowError("Unknown budget field: " + name)
+        _positive_number(value, "budget." + name)
+    if not envelope:
+        return task_budget
+    unknown = sorted(set(task_budget) - set(envelope))
+    if unknown:
+        raise FlowError("Task budget sets fields the authority envelope does not define: "
+                        + ", ".join(unknown))
+    return {**envelope, **task_budget}
+
+
 def load(document):
     """Structural validation; returns the document unchanged."""
 
@@ -69,15 +168,12 @@ def load(document):
 
     site = _object(doc.get("site"), "site", SITE_KEYS, required={"commands", "devices"})
     commands = _object(site.get("commands"), "site.commands", set(site.get("commands") or {}))
+    if not isinstance(commands, dict) or not commands:
+        raise FlowError("At least one execution command is required")
     for name, command in commands.items():
-        _object(command, "site.commands." + str(name),
-                {"argv", "env", "timeout_seconds", "basis", "cwd", "activation"})
-    devices = site.get("devices")
-    if not isinstance(devices, list) or not devices:
-        raise FlowError("At least one admitted device is required")
-    for device in devices:
-        _object(device, "device", {"node", "device", "identity", "idle_memory_bytes",
-                                   "memory_tolerance_bytes", "max_utilization_pct", "basis"})
+        command_card(name, command, site)
+    validate_devices(site.get("devices"))
+    validate_occupancy(site.get("occupancy"))
 
     for name in ("source", "paths"):
         if name in doc:
@@ -129,8 +225,6 @@ def lease_resources(devices, entries):
         raise FlowError("Lease resource must match an admitted device: " + resource)
     if len(set(resolved)) != len(resolved):
         raise FlowError("Lease resources must be unique")
-    if not owner:  # pragma: no cover - _text already rejects empty owners
-        raise FlowError("Lease owner must be nonempty")
     return resolved
 
 
@@ -158,7 +252,7 @@ def _spec(document, task, autonomy):
         "objective": task["objective"],
         "context": _task_context(scope, document.get("source") or {}),
         "permissions": list((document.get("authority") or {}).get("permissions") or []),
-        "budget": dict(task.get("budget") or (document.get("authority") or {}).get("budget") or {}),
+        "budget": _budget((document.get("authority") or {}).get("budget"), task.get("budget")),
     }
     for key in ("recovery_owner", "external_job", "profile"):
         if key in task:
@@ -201,15 +295,6 @@ def check(document):
     devices = site.get("devices") or []
     if not isinstance(authority.get("autonomy"), (dict, type(None))):
         issues.append("authority.autonomy must be an object when present")
-
-    identities = [str(device.get("identity")) for device in devices]
-    if len(set(identities)) != len(identities):
-        issues.append("devices must have unique identities")
-    for device in devices:
-        missing = {"node", "device", "identity", "basis"} - set(device)
-        if missing:
-            issues.append("device is missing fields: " + ", ".join(sorted(missing)))
-
     if not ceiling:
         warnings.append("authority.budget is absent; each task must carry its own ceiling")
 
