@@ -213,6 +213,8 @@ hcu-trainflow module-plan /private/task/modules.json --stage prepared
 hcu-trainflow --workspace /private/task/store module-run /private/task/modules.json --task TASK_ID
 ```
 
+每层用什么形态调用、JSON 字段怎么填、常见入口措辞对应哪种调用，见[调用方式](invocation-model.md)。
+
 `--stage S` 只保留 `stage` 包含 S 的模块，输出可直接 `module-run`；越界或空集即报错。
 
 `modules.json` 只需声明来源与输入，`profile` / `subworkflow` / `modules` 三选一（`preset` 是 `subworkflow` 的旧写法）：

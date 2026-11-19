@@ -651,3 +651,11 @@ HCU-Knowledge阶段已提交3829ef06、tag v0.5.6，两远端核对current且工
 - **P2 旧 preset 名失效**：`SUBWORKFLOW_ALIASES` 的键是字面量 `"quality.accept/assess"`，`quality.accept` 与 `quality.assess` 单独都解析失败，与"旧名仍可用"的声明不符。新增 `_legacy_names()` 按共享前缀展开（`quality.accept`、`quality.assess`），`subworkflow()` 同时查字面键与展开名。
 - 文档：`workflow-modules.md` profile 表（20/20/16/7 → 23/23/19/5）、成员阶段校验说明、`ambiguous-input` 段落改写为"类型区分 + 显式绑定"、别名说明、阅读面 4/18、护栏表 +2 行。
 - 验证：新增 `tests/test_catalog_scope.py`（6 项：成员阶段不变量、`validate_scope` 拒绝越界成员、整 profile 无歧义输入、analysis-only 清单与门禁、5 个旧名解析、未知名仍报错）；`tests/test_module_plan.py` 的歧义用例改为 monkeypatch 复现类型冲突，新增"默认接摘要"用例。全量回归与文档检查见下条。
+
+## 2026-11-19：调用方式文档
+
+- 新增 `docs/invocation-model.md`：三层（模块 / 子工作流 / 流程 profile）的四种调用形态、每层 JSON 字段表、`capability-run`/`module-plan`/`module-run`/`task-create`/`flow-*` 的真实示例、`problems[].kind` 与退出码语义、8 类常见入口措辞对应的 mode/profile/第一组调用、以及"人不需要写 JSON"的理由。
+- 明确一条边界：入口措辞仍是人与主控的接口，JSON 是主控与执行层的接口；同一条措辞应落到同一份计划，便于重放与复核。
+- 记录当前三处缺口（不隐去）：非 full 模式的 `invariants.gates` 与 `required_reports` 口径不一致；`analyze`/`diagnose` 带引擎时需要显式选 profile；`environment`/`operate` 尚无专属 profile。
+- 导航：README 文档索引与 `workflow-modules.md` §9 各加一行入口。
+- 验证：`check_documentation` 209 页 / 120 CLI 示例 / 50 JSON 示例 0 issues（新增的 13 条命令与 6 段 JSON 示例全部通过校验）。

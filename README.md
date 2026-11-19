@@ -214,6 +214,7 @@ python scripts/check_documentation.py
 任务源码、完整日志/trace/checkpoint、数据与看板保存在独立 workspace；默认 `.work/` 忽略提交。工程 Wiki 仅包含官方资料、可复用环境经验和模型最终优化总结；工作流方法在 docs/skills，过程记录不进入 Wiki；凭据、私钥和 token 不入仓。
 
 - [工程介绍](docs/project-overview.md) / [工作流全景](docs/workflow-map.md) / [协作循环](docs/collaboration.md) / [多 Agent 协同](docs/multi-agent.md) / [三个阶段工作流](docs/workflows.md)
+- [调用方式：模块、子工作流与流程 profile](docs/invocation-model.md)（JSON 入参、字段、入口措辞对应表与示例）
 - [快速开始与 CLI](docs/quickstart.md) / [架构](docs/architecture.md) / [设计文档导航](design-details.md)
 - [性能分析](docs/profiling.md) / [远程执行](docs/remote-execution.md)
 - [真实训练观察](docs/training-observation.md) / [离线训练图表](docs/training-dashboard.md) / [容量清理与观察换代](docs/workspace-maintenance.md)
