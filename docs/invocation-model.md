@@ -185,15 +185,30 @@ hcu-trainflow --workspace .work/T flow-brief  qwen3-8b-meg
 
 在这张表之外，单次补测（一次 environment-check、一次 iteration-check）用 `capability-run`；一组功能（trace 归因、质量对照、适配三件套）用子工作流。
 
-## 7. 人不需要写 JSON
+## 7. 谁写 JSON
 
-JSON 主要由主控生成并留存，人只需要给环境、模型、数据和目标。理由有三条：
+每份文档都有作者，区别在于**谁必须读懂它**。格式和现场输入由主控生成；**内容是人的意图和授权，人必须确认**。
 
-1. 现场输入只有执行时才清楚（路径、租约、命令卡），让用户先写会写出猜的值；
-2. 计划文档是可校验对象，写错会被 `problems` 拒绝，而不是跑出错误结果；
-3. 同一份文档可以重放、可以给 reviewer 核对，比会话里的一段话更可追溯。
+| 文档 | 谁写 | 人是否必须看 | 在哪看 |
+| --- | --- | --- | --- |
+| capability 请求、模块计划、子工作流计划 | 主控 | 否，排障时才看 | `module-plan` 的返回 |
+| profile 一次性计划（`{"profile":…}`） | 主控 | 否；站点接线有特殊形状时才手改 `bindings`/`step_inputs` | 同上 |
+| TaskSpec 的 `objective` | 主控起草 | **是**：这是用户目标的原文 | `task-show`、BOARD |
+| TaskSpec 的 `context` | 主控 | 是：比较范围（引擎、模型、数据、基线）不能由主控自行改写 | `task-show` |
+| PLAN.json 的 `acceptance` | 主控起草 | **是**：验收条款就是"什么算做完" | `flow-brief` 的 `acceptance.clauses` |
+| `permissions`、`budget` | 主控起草 | **是**：授权与硬顶属于人 | TaskSpec、`flow-brief` 的 `invariants` |
+| `autonomy.escalation`（降级下限、追加上限、验收策略） | 主控起草 | **是**：这是预授权信封 | `flow-brief` 的 `invariants`、`flow-degradation` |
+| 候选、报告、复核 | 执行者/复核者 | 按契约抽样 | 任务 workspace |
 
-入口措辞仍是人和主控之间的接口；JSON 是主控与执行层之间的接口。
+三条理由说明"格式"不该由人写：
+
+1. 现场输入只有执行时才确定（路径、租约、命令卡），提前写只能写成猜的值；
+2. 计划是可校验对象，写错会被 `problems` 拒绝，而不是跑出错误结果；
+3. 同一份文档可重放、可交给 reviewer 核对，比会话里的一段话更可追溯。
+
+但"内容"有一条真实风险：`acceptance` 由主控起草，就可能写得比用户本意更松，而主控又恰好是被考核的一方。现有防线是：`acceptance_edit` 默认 `forbid`（运行中改不了）、`flow-align` 会把"验收自起始改变"列成 drift、`flow-brief` 原样列出条款供人核对；**开工前读一次 `flow-brief` 的 `acceptance.clauses`** 是这轮唯一不能省的人工动作。目前 `flow-start` 不强制"人已确认"，这是可以再收紧的地方。
+
+入口措辞仍是人和主控之间的接口，JSON 是主控与执行层之间的接口；两者的分界不在"谁敲键盘"，而在"谁对内容负责"。
 
 ## 8. 已知缺口
 
