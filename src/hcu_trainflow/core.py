@@ -434,10 +434,12 @@ class Store:
         with self.db() as db:
             db.execute("BEGIN IMMEDIATE")
             created = utc()
-            # Evaluate visibility inside the write lock: a concurrent private
-            # registration cannot be promoted by a public re-import.
+            # Evaluate visibility once, inside the write lock: the first
+            # registration decides. A private re-put must not revoke the sharing
+            # a report already relied on, and a public re-put must not publish
+            # bytes another task registered privately.
             db.executemany("INSERT INTO artifacts VALUES(?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET "
-                           "visibility=CASE WHEN artifacts.visibility='private' THEN 'private' ELSE excluded.visibility END",
+                           "visibility=artifacts.visibility",
                            ((sha, path, size, visibility, created) for sha, (path, size) in records.items()))
         return hashes
 
@@ -523,11 +525,13 @@ class Store:
             # itself into observation mode to get past a refusal.
             raise FlowError("shadow mode requires shadow_guardrails declared at task creation")
         problems = []
+        borrowed = set()
         for sha in value["evidence"]:
             self.artifact(sha)
             owners = set() if self.artifact_public(sha) else self.artifact_tasks(sha)
             if owners and tid not in owners:
                 problems.append("Evidence " + sha + " belongs to another task")
+                borrowed.add(sha)
         from .integrity import check_claims, claims_required
         # Claims are checked here, at the boundary where the evidence is turned
         # into a conclusion, not at the end of the flow: detectability decays
@@ -541,7 +545,11 @@ class Store:
             problems.append(str(exc))
         if problems and not shadow:
             raise FlowError(problems[0])
-        if value["status"] == "pass" and not valid_pass(value):
+        # ``complete`` is gate-acceptable for the analysis report, so an
+        # agent-authored report in either status must show real execution.
+        # Capability/computed reports are derived from typed inputs and keep
+        # their own shape (agent_authored=False).
+        if agent_authored and value["status"] in {"pass", "complete"} and not valid_pass(value):
             raise FlowError("PASS requires actual execution, no failures and required coverage")
         if kind == "stage-quality" and value["status"] == "pass":
             from .quality import validate_stage_report
@@ -564,8 +572,12 @@ class Store:
                 self.event(db, tid, "integrity-shadow",
                            {"kind": kind, "artifact": sha, "problems": problems})
             # Remember which task produced each cited object, so a later report
-            # cannot borrow evidence that belongs to another task.
+            # cannot borrow evidence that belongs to another task. Evidence this
+            # report was refused for is *not* claimed: a shadow run measures a
+            # refusal, it must not launder ownership of borrowed evidence.
             for item in value["evidence"]:
+                if item in borrowed:
+                    continue
                 self.event(db, tid, "artifact-claimed", {"artifact": item, "kind": kind})
         from .experience import sync
         try:

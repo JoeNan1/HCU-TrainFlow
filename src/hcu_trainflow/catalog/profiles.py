@@ -10,7 +10,7 @@ from typing import Any, Iterable, Mapping
 
 from .contracts import ModuleContractError, Profile
 from . import registry
-from .gates import derive
+from .gates import derive, missing_producers
 
 # Every module id, in catalog order.
 _ALL = tuple(module.id for module in registry.modules())
@@ -180,5 +180,18 @@ def route_surface(modules: Iterable[str]) -> dict[str, Any]:
 
 
 def derived_gates(selected: Profile | str) -> dict[str, list[str]]:
+    """Stage gates for a profile; refuses to derive gates it cannot produce.
+
+    A profile may thin the work but never the evidence a stage it covers
+    demands. Without this check a profile could list only an agent-authored
+    module and the module-produced gate would disappear from the derivation
+    while ``required_reports`` happily accepted the narrower result.
+    """
+
     chosen = profile(selected) if isinstance(selected, str) else selected
-    return derive([registry.module(module_id) for module_id in chosen.module_ids()], chosen.stages)
+    modules = [registry.module(module_id) for module_id in chosen.module_ids()]
+    gaps = missing_producers(modules, chosen.stages)
+    if gaps:
+        raise ModuleContractError("Profile drops a gate its modules cannot produce: "
+                                  + chosen.id + " -> " + ", ".join(gaps))
+    return derive(modules, chosen.stages)

@@ -49,8 +49,11 @@ def run_demo(destination):
 
     def candidate(summary):
         decision = flow.next_step(store, tid)
+        # ``executed`` counts the single scripted inspection this fixture
+        # performs: an agent-authored completion with no execution at all is
+        # refused, and the demo must not pretend otherwise.
         report = store.report(tid, 'analysis', {'context': decision['context'], 'status': 'complete',
-            'candidate_snapshot': snapshot, 'evidence': [evidence], 'summary': summary})
+            'executed': 1, 'candidate_snapshot': snapshot, 'evidence': [evidence], 'summary': summary})
         return flow.submit(store, tid, {'author': 'scripted-actor', 'context': decision['context'],
             'goal': decision['goal'], 'snapshot': snapshot, 'summary': summary, 'reports': {'analysis': report['artifact']},
             'target': 'completed', 'evidence': [evidence]})

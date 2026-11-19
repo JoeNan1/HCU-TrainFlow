@@ -46,8 +46,16 @@ class Handoff(FlowError):
 
 def _halt(store, tid, decision, reasons, *, extra=None, channel=HALT_CHANNEL):
     task = store.task(tid)
+    with store.db() as db:
+        blocking = [row['id'] for row in db.execute(
+            "SELECT id,payload FROM flow_questions WHERE task=? AND status='open'", (tid,))
+            if json.loads(row['payload']).get('blocking')]
     body = {'state': task['state'], 'context': task['context'], 'reasons': reasons,
-            'autonomy': flow.autonomy(task), 'decision': decision.get('action')}
+            'autonomy': flow.autonomy(task), 'decision': decision.get('action'),
+            # Two stops with the same kind of reason are still different
+            # incidents when the round or the open question differs; without a
+            # discriminator the second alert was never queued.
+            'round': decision.get('round'), 'blocking_questions': blocking}
     with store.db() as db:
         # Repeated drives against the same stop must not flood the event log,
         # but the first stop is queued as an inbox alert for any watcher.
@@ -55,8 +63,13 @@ def _halt(store, tid, decision, reasons, *, extra=None, channel=HALT_CHANNEL):
                               " ORDER BY seq DESC LIMIT 1", (tid,)).fetchone()
         if not previous or json.loads(previous['payload']) != body:
             store.event(db, tid, 'flow-halted', body, channel=channel)
+    options = decision.get('options')
+    if options is None:
+        # A driver-produced stop (worker declined, gate rejected) faces the same
+        # menu as a Flow stop; the caller should not have to special-case it.
+        options = flow.halt_options(store, task)
     return {'status': 'halt', 'action': 'halt', 'halt_reason': reasons[0] if reasons else 'policy-stop',
-            'reasons': reasons, 'options': decision.get('options'), 'context': task['context'],
+            'reasons': reasons, 'options': options, 'context': task['context'],
             'state': task['state'], 'decision': decision, **(extra or {})}
 
 

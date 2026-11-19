@@ -669,3 +669,17 @@ HCU-Knowledge阶段已提交3829ef06、tag v0.5.6，两远端核对current且工
 - 生成器新增 `--intake` / `--task`：按任务展开到 `bundles/<task_id>/`，多写 `contracts/*.json`、`leases.json`（含 owner/ttl）、`inputs.json`；`--intake` 与站点契约二选一，站点契约路径的输出结构保持不变；`build()` 增加 `require_autonomy` 开关，站点契约仍强制 autonomy。
 - 新增 `scripts/check_intake.py`：只读检查，退出码 0/2/1；文档新增 §9（复用粒度、两条命令、四条边界：复用≠长期授权、`revision` 只是标记、bundle 仍需人确认、人只给值）。
 - 验证：`tests/test_intake.py` 11 项（展开只带声明的契约/命令、生成物被真实运行时接受、预算越界、未知契约/命令、租约匹配与节点歧义、profile 冲突、结构校验、CLI 逐任务布局与防覆盖、单任务展开、check 退出码）；`tests/test_autonomous_task.py` 既有 13 项仍通过。
+
+## 2026-11-19：审计后的三轮加固（放宽通道 / 归属与门禁 / 不变量与 halt）
+
+- 起因：全仓审计（store/report、flow、catalog、CLI/脚本四条线，逐条复现）后来按三批修复，先修我自己引入的 intake 漏洞（命令名路径穿越、预算替换而非收窄、check 与生成器校验不一致、空 lease 崩溃）。
+- **第一批（放宽通道）**：
+  - `max_regression` 只从 PLAN 读取（0–0.5），experiment 自带即 `experiment-declares-its-own-threshold`；此前候选写 1e9 可把 5 倍变慢判成通过。
+  - claims 的强制条件从 `status=="pass"` 改为 `pass|complete`（capability 报告仍按 `agent_authored=False` 豁免）；`complete` 是 `analysis` 门禁可接受状态，此前可绕过引用校验。
+  - shadow 模式不再为被拒证据写 `artifact-claimed`，避免一次测量把借来的证据永久变成自己的。
+  - 授权/验收/负结果/取消四类问题移出 `options.resolve_question`，列入新的 `escalation_questions`，`flow-question-resolve` 也拒绝关闭。
+  - `_stage_scope` 对未知 profile fail-closed；CLI 退出码补 `drift`/`select`。
+- **第二批（归属与门禁）**：`artifact_owners` 用 `json_each` 归因 operations 与 pipeline_steps 结果里的 `evidence` 数组（此前标量比较匹配不到，真实执行证据全部无主）；`derived_gates` 在派生时强制 `missing_producers` 为空，profile 不能丢掉某阶段的模块门禁；`flow-align` 改以**当前**目标快照为锚，合法重规划不再永久 drift。
+- **第三批（不变量、brief、halt 与 P2）**：`invariants.budget` 改为生效上限（无上限维度输出 `null`）；brief 新增 `limits` 并纳入 `brief_token`（改 `max_rounds` 会失效旧哈希）；`max_rounds` 也约束 repair 循环；driver 产出的 halt 补齐同一套 `options`；halt 去重键加入轮次与阻塞问题，避免两起事件合并；artifact 可见性在首次登记时确定（public 不会被后续 private 覆盖）；容差去掉 1e-9 绝对下限；审计脚本复制 DB 后读取（不再在 store 目录生成 `-wal/-shm`），报告正文不再受 8MiB 证据上限；`gates.derive/missing_producers` 接受 Profile；`interface()` 规范化顺序；空 `stages` 与越界 `stages` 报错；`python -m hcu_trainflow.cli` 可用。
+- 回归：新增 `tests/test_relaxation_guards.py`（8）、`tests/test_attribution_and_gates.py`（6）、`tests/test_invariants_and_halts.py`（10），并更新受影响的期望（drift 语义、接口排序、可见性、合成 fixture 的 `executed`/`agent_authored`）。全量 **1673 passed / 5 skipped**（514 秒）。
+- 未做（不在这三批）：`report-verify` 对 capability 报告的误报、`candidate_snapshot` 自引用、`artifact-add` 无法标记 public、profile 阶段替换的 CLI 入口、无效指令静默丢弃、`validate_catalog` 的两项缺检。

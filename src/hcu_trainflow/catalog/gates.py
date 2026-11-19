@@ -26,9 +26,22 @@ def next_stage(stage: str) -> str | None:
 
 
 def _entries(modules: Iterable[Module | str]) -> list[Module]:
+    """Resolve names, modules, and a Profile (by its module list)."""
+
+    if hasattr(modules, "module_ids"):
+        # A Profile is not iterable; accept it directly instead of raising a
+        # bare TypeError from ``for item in modules``.
+        modules = modules.module_ids()
     resolved = []
     for item in modules:
-        resolved.append(registry.resolve(item) if isinstance(item, str) else item)
+        if isinstance(item, str):
+            resolved.append(registry.resolve(item))
+        elif hasattr(item, "module_ids"):
+            # A Profile is not iterable; expanding it here keeps derive() and
+            # missing_producers() usable with the object every caller has.
+            resolved.extend(registry.resolve(name) for name in item.module_ids())
+        else:
+            resolved.append(item)
     return resolved
 
 

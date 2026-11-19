@@ -25,7 +25,9 @@ def test_interface_is_the_external_surface_of_the_composition():
 
 def test_alternative_types_of_the_same_input_are_reported_together():
     readiness = catalog.interface(catalog.subworkflow("environment-readiness").modules)
-    assert readiness["requires"]["contract"] == "occupancy-contract|environment-contract"
+    # Alternative types are canonicalised (sorted), so the surface does not
+    # depend on the order the members were listed in.
+    assert readiness["requires"]["contract"] == "environment-contract|occupancy-contract"
     assert set(readiness["requires"]) == {"contract", "observations", "resource", "owner", "ttl"}
 
 

@@ -402,9 +402,15 @@ def main(argv=None):
         # successful completion even though the Flow state is consistent.
         if status in {"halt", "halted"}:
             return 2
-        return 2 if status in {"fail", "failed", "incomplete", "partial", "rejected", "unknown", "attention", "needs-agent-review"} else 0
+        # ``drift`` asks for a replan, so a monitoring script must see it too.
+        return 2 if status in {"fail", "failed", "incomplete", "partial", "rejected", "unknown",
+                               "attention", "needs-agent-review", "drift", "select"} else 0
     except KeyboardInterrupt:
         return 130
     except (FlowError, OSError, ValueError, KeyError, TypeError, sqlite3.Error) as exc:
         print(json.dumps({"status": "error", "message": str(exc)}, ensure_ascii=False), file=sys.stderr)
         return 1
+
+
+if __name__ == '__main__':  # python -m hcu_trainflow.cli must behave like the console script
+    raise SystemExit(main())

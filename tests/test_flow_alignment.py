@@ -30,14 +30,27 @@ def test_a_fresh_profile_task_is_aligned(tmp_path):
     assert result["gates"]
 
 
-def test_a_changed_acceptance_becomes_visible_drift(tmp_path):
+def test_a_sanctioned_replan_realigns_instead_of_drifting_forever(tmp_path):
     store = setup(tmp_path)
     flow.start(store, "t", {"acceptance": {"result": "Something narrower"}},
                reason="reduced scope for the fixture")
     result = flow.align(store, "t")
+    assert result["status"] == "aligned", result["deltas"]
+    assert result["next"] == "continue"
+
+
+def test_an_unrecorded_acceptance_change_is_drift(tmp_path):
+    """A plan edited without a replan no longer matches the agreed goal."""
+
+    store = setup(tmp_path)
+    with store.db() as db:
+        plan = json.loads(db.execute("SELECT plan FROM flows WHERE task='t'").fetchone()["plan"])
+        plan["acceptance"] = {"result": "Something narrower"}
+        db.execute("UPDATE flows SET plan=? WHERE task='t'", (json.dumps(plan),))
+    result = flow.align(store, "t")
     assert result["status"] == "drift"
     kinds = [delta["kind"] for delta in result["deltas"]]
-    assert "acceptance-changed-since-start" in kinds
+    assert "acceptance-mismatch" in kinds
     assert result["next"] == "flow-replan"
     with store.db() as db:
         events = [json.loads(row["payload"]) for row in

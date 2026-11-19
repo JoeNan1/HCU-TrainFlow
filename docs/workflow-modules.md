@@ -263,6 +263,8 @@ hcu-trainflow --workspace /private/task/store module-run /private/task/modules.j
 | `module-not-implemented` | 目录里声明了但没有实现 |
 | `invalid-wiring` | 接线通不过 Pipeline 计划校验（防御性） |
 
+子工作流接口（`interface()`）按成员 id 规范排序、候选类型排序输出，所以同一组成员换顺序得到的接口完全一致。调用方给 profile 传 `stages` 只能收窄到它声明的范围，超出即拒绝；空的 `stages` 同样报错，不会静默关掉阶段证据检查。
+
 自动连线规则：**同名 + 类型匹配 + 唯一提供者**。多候选或缺失一律报错，不静默猜测；显式绑定的键在输入名唯一时写 `<input>`，否则写 `<module>.<input>`。报告登记由 `report` 派生到步骤 `config.report_kind`，仅在任务绑定时生效，且没有真实证据的步骤只留 incomplete（不会把摘要当成原件）。
 
 把整个 `llm-megatron`（23 个模块）一次性 `module-plan` 只剩 `missing-input`：多数输入来自现场，profile 声明的是"这个场景需要哪些模块"，实际运行总是取子集或功能子工作流。**不应出现 `ambiguous-input`**——`profiling.summarize` 提供 `analysis`（导出 `analysis_scope=hipprof-summary`，正是短基线资格默认比对的范围），`profiling.analyze` 提供 `analysis-report`，两者类型不同，所以 `quality.qualify.analysis` 自动接到摘要；要改用完整归因，写一条显式绑定即可。若这两个模块将来又一次广告同一类型，`module-plan` 会照旧报 `ambiguous-input` 而不是替调用方猜一个。
@@ -278,7 +280,7 @@ hcu-trainflow --workspace /private/task/store module-run /private/task/modules.j
 | 别名偷偷并存 | 别名只能指向目录内条目，且不能遮蔽模块 id |
 | 路由变成第二状态机 | 只返回候选与理由，不推进阶段 |
 | 分流后阅读面没变薄 | `analysis-only` 阅读面 4/18 ≈ 0.22，`torch-native-vision` 16/18 ≈ 0.89 |
-| 门禁被顺手放宽 | `llm-megatron` 派生 == `flow.GATES`；profile 派生 ⊆ 全量且 `missing_producers` 为空；`required_reports` 对 profile 未覆盖的阶段回落全量门禁，派生更宽直接报错 |
+| 门禁被顺手放宽 | `llm-megatron` 派生 == `flow.GATES`；`catalog.derived_gates` 在派生时强制 `missing_producers` 为空——profile 若保留了某阶段却没有该门禁报告的产出者，直接报错而不是给出更窄的派生结果；`required_reports` 对 profile 未覆盖的阶段回落全量门禁，派生更宽直接报错 |
 | 优化/适配模块把"判断"伪装成"计算" | 19–21、22–24 只产证据，`limits` 与 `stage_equivalent` 字段显式声明边界 |
 | 契约与实现漂移 | 每个模块都映射到已注册 capability/action，测试逐项核对 |
 | 借用别的任务的证据 | `report-add` 校验被引对象归属，只属于其他任务即拒绝（`tests/test_integrity_guardrails.py`） |

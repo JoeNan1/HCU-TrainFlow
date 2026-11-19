@@ -100,7 +100,7 @@ TaskSpec 声明 `autonomy` 后，该任务没有人工通道，目标是让 Agen
 
 - `mode` 固定为 `autonomous`；`reviewers` 列出允许独立复核的 Agent 身份，复核仍须结构完整、身份不等于候选作者、发现分级、验收项全覆盖并附证据。
 - 指导不再阻塞：`GUIDANCE.md` 与会话记录照常采集和留存，但以 `autonomy-policy` 身份登记为 `not-applicable`（advisory），不冒充人的决定。
-- 阻塞问题先在 `question_answers` 的 `match` 命中问题 ID/标题/正文时用声明答案关闭，并留存回答、来源与策略指纹；未命中则保持 open 并 `halt`。主控可以自行决定的事项用 `flow-question-resolve` 记录自己的决议（answer/source/note），该记录归因为 `autonomy-policy` 并保留策略指纹，仍是 Agent 的决定而不是人的回答；它只解除问题，不改变报告、复核、门禁或预算。
+- 阻塞问题先在 `question_answers` 的 `match` 命中问题 ID/标题/正文时用声明答案关闭，并留存回答、来源与策略指纹；未命中则保持 open 并 `halt`。授权、放宽验收、负结果与取消四类问题不进入 `options.resolve_question`（列入 `escalation_questions`），`flow-question-resolve` 也会拒绝关闭它们——它们与 `must_escalate` 是同一组边界。主控可以自行决定的事项用 `flow-question-resolve` 记录自己的决议（answer/source/note），该记录归因为 `autonomy-policy` 并保留策略指纹，仍是 Agent 的决定而不是人的回答；它只解除问题，不改变报告、复核、门禁或预算。
 - 原本返回 `human` 的情形（未回答问题、复核失败数、轮次/停滞预算、上下文变化、任务 paused/blocked/failed）改为 `halt` 并带 `halt_reason`；`flow-drive` 记录 `flow-halted` 事件并以非零状态退出。
 - 门禁不变：报告必须存在且绑定当前候选与上下文，`pass` 仍要求真实执行与完整覆盖。自主策略不能把缺失、跳过或 `incomplete` 的证据变成通过，也不能复用旧复核。
 - `halt` 是带证据的终止，不是超时重试。设备、写入路径和操作预算须在创建任务与计划时预先声明；策略未覆盖的授权、硬件或方向性缺口同样以 `halt` 收口，需要新假设时另起任务或记录重规划。
@@ -122,11 +122,12 @@ TaskSpec 声明 `autonomy` 后，该任务没有人工通道，目标是让 Agen
   "max_stalled_rounds": 3,
   "full_review_every": 4,
   "max_review_failures": 3,
-  "poll_seconds": 300
+  "poll_seconds": 300,
+  "max_regression": 0.05
 }
 ```
 
-验收条件按任务具体化，独立分析模式不要套全训练条件。轮数和 reviewer 失败数防止无界循环；计算时长、操作数仍受 TaskSpec budget 限制。连续停滞由 reviewer 基于实际收益/阻塞证据判断，不能通过每轮自报“有进步”来绕过。达到边界后提出具体建议；有新假设和授权才记录重规划。不要自动上调 budget 或降低数值门槛。
+`max_regression`（可选，0–0.5）是计划里声明的迭代允许回退幅度，候选自己的 experiment 不得声明它。验收条件按任务具体化，独立分析模式不要套全训练条件。轮数和 reviewer 失败数防止无界循环；计算时长、操作数仍受 TaskSpec budget 限制。连续停滞由 reviewer 基于实际收益/阻塞证据判断，不能通过每轮自报“有进步”来绕过。达到边界后提出具体建议；有新假设和授权才记录重规划。不要自动上调 budget 或降低数值门槛。
 
 `coordinate` 要求主控处理团队可派发工作、结果验收和定向消息，具体见 [多 Agent 协同](multi-agent.md)。团队工作验收完成后，仍要提交整体候选、独立复核并推进阶段；成员已有审查可作为集成复核依据，不机械逐项重做。
 

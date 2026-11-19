@@ -57,9 +57,11 @@ def test_batch_put_one_transaction_and_private_visibility(monkeypatch, tmp_path)
     with store.db() as db:
         rows = {row["id"]: row["visibility"] for row in db.execute("SELECT * FROM artifacts")}
     assert rows == {existing: "private", digest(b"public"): "public"}
+    # Visibility is decided at first registration: a later private re-put
+    # must not revoke sharing a report already relies on.
     store.put_many([b"public"], "private")
     with store.db() as db:
-        assert db.execute("SELECT visibility FROM artifacts WHERE id=?", (digest(b"public"),)).fetchone()[0] == "private"
+        assert db.execute("SELECT visibility FROM artifacts WHERE id=?", (digest(b"public"),)).fetchone()[0] == "public"
 
 
 def test_batch_stream_failure_does_not_register_partial_transaction(tmp_path):

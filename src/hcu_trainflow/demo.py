@@ -50,7 +50,12 @@ def run_demo(destination):
         inbox(store, "complete", event["event_id"], "demo-controller")
     monitor_report(store, "synthetic", root / "observations.html")
     report_evidence = store.put(json.dumps({"trace": trace, "analysis": analysis, "rank_coverage": coverage}).encode())
-    store.report("synthetic", "analysis", {**analysis, "context": ctx, "evidence": [report_evidence]})
+    # ``analysis`` is computed by the analysis capability, so it is not an
+    # agent-authored report; declaring that keeps the claims requirement
+    # where it belongs.
+    store.report("synthetic", "analysis", {**analysis, "context": ctx,
+                                           "evidence": [report_evidence]},
+                 agent_authored=False)
     store.transition("synthetic", "completed")
     result = {"status": "complete", "demo_kind": "Synthetic telemetry and CPU subprocess; no HCU performance or loss claim", "snapshot": snap["snapshot_id"], "command": execution["status"], "health": health["status"], "analysis": analysis["status"], "loss_fixture": quality["status"], "healthy_watch": good["status"], "stalled_watch": stalled["status"], "replayed_events": imported["imported"], "claimed_incidents": len(messages), "report": str(root / "observations.html")}
     write_json(root / "demo-result.json", result)

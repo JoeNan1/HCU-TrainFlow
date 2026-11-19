@@ -268,7 +268,7 @@ def training(tmp_path):
 
 def test_report_milestone_replay_and_context_isolation(tmp_path):
     s,raw=training(tmp_path);context=s.task('t')['context']
-    result=s.report('t','performance',{'context':context,'status':'complete','evidence':[raw],'step_ms':10})
+    result=s.report('t','performance',{'context':context,'status':'complete','executed':1,'evidence':[raw],'step_ms':10})
     assert result['knowledge']['records']==1
     assert experience.sync(s)['records']==0
     hit=experience.search(s,'performance',model='m')['results'][0]

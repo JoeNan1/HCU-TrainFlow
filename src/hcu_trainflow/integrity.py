@@ -29,7 +29,10 @@ def artifact_owners(db, sha):
     """Tasks already attributable for a retained object (see Store.artifact_tasks).
 
     Kept next to the claim checks so a read-only audit and the write path ask
-    exactly the same question.
+    exactly the same question. Executions and pipeline steps record their
+    evidence as a *list*, so membership is tested with ``json_each``: a scalar
+    comparison against the JSON array matched nothing and left every
+    execution-produced object unowned.
     """
 
     tasks = {row[0] for row in db.execute(
@@ -37,16 +40,24 @@ def artifact_owners(db, sha):
         " AND json_extract(payload,'$.artifact')=?", (sha,))}
     tasks |= {row[0] for row in db.execute(
         "SELECT DISTINCT r.task FROM pipeline_steps s JOIN pipeline_runs r ON r.id=s.run"
-        " WHERE s.artifact=? OR s.report=?", (sha, sha))}
+        " WHERE s.artifact=? OR s.report=?"
+        " OR (json_valid(s.result) AND (json_extract(s.result,'$.artifact')=?"
+        " OR EXISTS (SELECT 1 FROM json_each(s.result,'$.evidence') WHERE json_each.value=?)))",
+        (sha, sha, sha, sha))}
     tasks |= {row[0] for row in db.execute(
         "SELECT DISTINCT task FROM operations WHERE task IS NOT NULL"
-        " AND (json_extract(result,'$.artifact')=?"
-        " OR json_extract(result,'$.evidence')=?)", (sha, sha))}
+        " AND (json_valid(result) AND (json_extract(result,'$.artifact')=?"
+        " OR EXISTS (SELECT 1 FROM json_each(operations.result,'$.evidence')"
+        " WHERE json_each.value=?)))", (sha, sha))}
     return {task for task in tasks if task}
 
 
 def _stage_scope(task):
-    """Stages the task's declared profile serves; every stage when undeclared."""
+    """Stages the task's declared profile serves; every stage when undeclared.
+
+    A declared profile that cannot be resolved fails closed: falling back to
+    "every stage" would let a claim name a stage the task never planned.
+    """
 
     from .catalog import contracts
     from .catalog.profiles import profile as declared_profile
@@ -55,9 +66,10 @@ def _stage_scope(task):
     if not declared:
         return set(contracts.FLOW_STAGES)
     try:
-        entry = declared_profile(declared["id"])
+        entry = declared_profile(declared.get("id"))
     except Exception:
-        return set(contracts.FLOW_STAGES)
+        raise FlowError("Claim stage scope needs a known profile: "
+                        + str(declared.get("id"))) from None
     return set(entry.stages)
 
 
@@ -75,10 +87,21 @@ def _resolve(document, path):
 
 
 def _same(left, right):
+    """Numeric equality with a relative tolerance.
+
+    No absolute floor: a floor of 1.0*TOLERANCE let a claimed 0.0 match a source
+    of 5e-10, i.e. an infinite relative error near zero. Exact integers still
+    compare exactly, so values above 2**53 are not silently rounded together.
+    """
+
     if isinstance(left, bool) or isinstance(right, bool):
         return left is right
     if isinstance(left, (int, float)) and isinstance(right, (int, float)):
-        scale = max(abs(float(left)), abs(float(right)), 1.0)
+        if left == right:
+            return True
+        scale = max(abs(float(left)), abs(float(right)))
+        if scale == 0.0:
+            return False
         return abs(float(left) - float(right)) <= TOLERANCE * scale
     return left == right
 
@@ -96,8 +119,11 @@ def check_claims(store, task, kind, value, *, require=False):
 
     claims = value.get("claims")
     if claims is None:
-        if require and value.get("status") == "pass":
-            raise FlowError("PASS requires claims that resolve to retained evidence")
+        # ``complete`` is gate-acceptable for the analysis report, so it needs
+        # the same evidence binding as ``pass``; capability-computed reports are
+        # exempt through ``require=False``, not through a status string.
+        if require and value.get("status") in {"pass", "complete"}:
+            raise FlowError("PASS/COMPLETE requires claims that resolve to retained evidence")
         return []
     if not isinstance(claims, list) or not claims:
         raise FlowError("Claims must be a non-empty list")

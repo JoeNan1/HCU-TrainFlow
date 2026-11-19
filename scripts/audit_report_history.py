@@ -9,17 +9,21 @@ of the fault-injection tests.
     python scripts/audit_report_history.py STORE [STORE ...]
     python scripts/audit_report_history.py --json STORE
 
-The store is opened with ``mode=ro``; nothing is created, migrated or marked.
-Large objects are checked for presence and size but not re-digested, so a
-multi-gigabyte trace does not have to be read twice.
+The database (and any WAL side files) is copied to a temporary directory and
+read there, so the store directory gains no ``-wal``/``-shm`` and a read-only
+mount works. Large *evidence* objects are checked for presence and size but not
+re-digested; report bodies are always read in full, since a size cap applied to
+a body turns a valid large report into a false positive.
 """
 from __future__ import annotations
 
 import argparse
 import contextlib
 import json
+import shutil
 import sqlite3
 import sys
+import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -32,13 +36,20 @@ MAX_DIGEST = 8 * 1024 * 1024
 
 
 class ReadOnlyStore:
-    """The slice of ``Store`` the claim checks need, backed by ``mode=ro``."""
+    """The slice of ``Store`` the claim checks need, backed by a private copy."""
 
     def __init__(self, root):
         self.root = Path(root)
-        self.path = self.root / "state.sqlite3"
-        if not self.path.exists():
+        source = self.root / "state.sqlite3"
+        if not source.exists():
             raise SystemExit("No state.sqlite3 under " + str(self.root))
+        self._temp = tempfile.TemporaryDirectory(prefix="trainflow-audit-")
+        self.path = Path(self._temp.name) / "state.sqlite3"
+        shutil.copy2(source, self.path)
+        for suffix in ("-wal", "-shm"):
+            side = Path(str(source) + suffix)
+            if side.exists():
+                shutil.copy2(side, str(self.path) + suffix)
 
     @contextlib.contextmanager
     def db(self):
@@ -56,7 +67,7 @@ class ReadOnlyStore:
             raise FlowError("Unknown task " + tid)
         return {**dict(row), "spec": json.loads(row["spec"])}
 
-    def artifact(self, sha):
+    def _read(self, sha, limit):
         with self.db() as db:
             row = db.execute("SELECT path,size FROM artifacts WHERE id=?", (sha,)).fetchone()
         if not row:
@@ -64,9 +75,19 @@ class ReadOnlyStore:
         path = (self.root / row["path"]).resolve()
         if not path.is_file() or path.stat().st_size != row["size"]:
             raise FlowError("Artifact missing or resized: " + sha)
-        if row["size"] > MAX_DIGEST:
-            return b""  # presence checked; the digest is not needed to audit claims
+        if limit is not None and row["size"] > limit:
+            return b""  # presence checked; the digest is not needed to audit evidence
         return path.read_bytes()
+
+    def artifact(self, sha):
+        """Evidence object: size-capped, because only presence is audited."""
+
+        return self._read(sha, MAX_DIGEST)
+
+    def report_body(self, sha):
+        """Report bodies are parsed in full; a size cap would flag a valid report."""
+
+        return self._read(sha, None)
 
     def artifact_tasks(self, sha):
         with self.db() as db:
@@ -95,7 +116,7 @@ def audit(root):
         result["reports"] += 1
         task = store.task(row["task"])
         try:
-            body = json.loads(store.artifact(row["artifact"]))
+            body = json.loads(store.report_body(row["artifact"]))
         except (FlowError, ValueError) as exc:
             result["flagged"].append({"task": row["task"], "kind": row["kind"],
                                       "problem": "unreadable report: " + str(exc)})

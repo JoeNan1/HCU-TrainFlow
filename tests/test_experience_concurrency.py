@@ -91,7 +91,7 @@ def test_rebuild_recovers_manual_event_mapping(tmp_path, monkeypatch):
 def test_rebuild_recovers_automatic_event_mapping(tmp_path):
     store, value = training(tmp_path)
     result = store.report('t', 'performance', {'context': value['context'],
-                           'status': 'complete', 'evidence': value['evidence'], 'step_ms': 10})
+                           'status': 'complete', 'executed': 1, 'evidence': value['evidence'], 'step_ms': 10})
     assert result['knowledge']['records'] == 1
     with store.db() as db:
         db.execute('DELETE FROM experience_events')
@@ -161,7 +161,7 @@ def test_sync_repairs_index_after_page_publication(tmp_path, monkeypatch, existi
 
     monkeypatch.setattr(experience, 'atomic_write', fail_index)
     result = store.report('t', 'performance', {'context': value['context'],
-                          'status': 'complete', 'evidence': value['evidence'], 'step_ms': 10})
+                          'status': 'complete', 'executed': 1, 'evidence': value['evidence'], 'step_ms': 10})
     assert result['knowledge']['status'] == 'pending'
     with store.db() as db:
         ident = db.execute('SELECT id FROM experiences').fetchone()[0]

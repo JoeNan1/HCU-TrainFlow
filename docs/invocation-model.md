@@ -163,7 +163,7 @@ hcu-trainflow --workspace .work/T flow-brief  qwen3-8b-meg
 | 项 | 规则 |
 | --- | --- |
 | 输出 | 每个命令一个 JSON；判定看 `status`（`pass`/`incomplete`/`blocked`/`halt`/`attention` 等） |
-| 退出码 | `0` 正常；`2` 需处理（`incomplete`/`blocked`/`halt`/`attention`/`failed`）；`1` 调用本身出错 |
+| 退出码 | `0` 正常；`2` 需处理（`incomplete`/`blocked`/`halt`/`attention`/`failed`/`drift`/`select`）；`1` 调用本身出错 |
 | 计划问题 | `problems[].kind` 取 `missing-input`、`ambiguous-input`、`unsatisfied-need`、`stage-evidence-dropped`、`module-not-implemented`、`binding-outside-set`、`invalid-wiring` |
 | 证据 | `module-run` 只登记证据与报告；推进判定在 `flow-advance` |
 | 护栏位置 | `claims`、`brief_hash`、`invariants`、证据归属只在正式任务的写入边界生效 |
@@ -206,7 +206,7 @@ hcu-trainflow --workspace .work/T flow-brief  qwen3-8b-meg
 2. 计划是可校验对象，写错会被 `problems` 拒绝，而不是跑出错误结果；
 3. 同一份文档可重放、可交给 reviewer 核对，比会话里的一段话更可追溯。
 
-但"内容"有一条真实风险：`acceptance` 由主控起草，就可能写得比用户本意更松，而主控又恰好是被考核的一方。现有防线是：`acceptance_edit` 默认 `forbid`（运行中改不了）、`flow-align` 会把"验收自起始改变"列成 drift、`flow-brief` 原样列出条款供人核对；**开工前读一次 `flow-brief` 的 `acceptance.clauses`** 是这轮唯一不能省的人工动作。目前 `flow-start` 不强制"人已确认"，这是可以再收紧的地方。
+但"内容"有一条真实风险：`acceptance` 由主控起草，就可能写得比用户本意更松，而主控又恰好是被考核的一方。现有防线是：`acceptance_edit` 默认 `forbid`（运行中改不了）、`flow-align` 会把"验收与目标快照不一致（未记录的改动）"列成 drift、`flow-brief` 原样列出条款供人核对；**开工前读一次 `flow-brief` 的 `acceptance.clauses`** 是这轮唯一不能省的人工动作。目前 `flow-start` 不强制"人已确认"，这是可以再收紧的地方。
 
 入口措辞仍是人和主控之间的接口，JSON 是主控与执行层之间的接口；两者的分界不在"谁敲键盘"，而在"谁对内容负责"。具体到每个模块、每个子工作流、每个阶段要人给哪些输入，见第 8 节。
 

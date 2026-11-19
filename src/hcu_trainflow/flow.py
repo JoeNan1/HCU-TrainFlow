@@ -4,6 +4,7 @@ The Agent executes the decisions. This module never silently launches a model,
 claims to authenticate reviewer identity, or treats a code review as a GPU test.
 """
 import json
+import math
 import time
 from .core import DEGRADE_DETAILS, FlowError, GATES, atomic_write, child, context_epoch, fingerprint, safe_id, utc
 from .skill_registry import STAGE_SKILLS, WIKI_UPDATE_SKILL
@@ -106,6 +107,28 @@ MUST_ESCALATE = (
     'cancel: abandoning the task is a human decision',
 )
 
+#: A question that names one of these is a human decision, so it may not appear
+#: in ``resolve_question`` and an Agent may not close it. The categories mirror
+#: ``MUST_ESCALATE``; matching is on the question text because the policy has no
+#: typed category channel.
+ESCALATION_KEYWORDS = {
+    'authorization': ('authorization', 'authorisation', 'credential', 'permission',
+                      'new host', 'shared resource', '授权', '权限', '凭据', '主机', '账号'),
+    'acceptance': ('acceptance', 'relax', '验收', '放宽', '标准'),
+    'objective': ('objective', 'negative result', 'cannot be met', '负结果', '目标'),
+    'cancel': ('cancel', 'abandon', '取消', '放弃'),
+}
+
+
+def escalation_category(payload):
+    """Which human-only category a question belongs to, if any."""
+
+    text = (str(payload.get('title') or '') + ' ' + str(payload.get('body') or '')).lower()
+    for category, words in ESCALATION_KEYWORDS.items():
+        if any(word.lower() in text for word in words):
+            return category
+    return None
+
 
 def halt_options(store, task):
     """Machine-readable menu of the actions a halt still permits.
@@ -137,11 +160,20 @@ def halt_options(store, task):
                       'operations_per_addition': rules['operations_per_addition'],
                       'operations_until_hard_ceiling': spare}
     with store.db() as db:
-        questions = [row['id'] for row in db.execute(
-            "SELECT id,payload FROM flow_questions WHERE task=? AND status='open'", (tid,))
-            if json.loads(row['payload']).get('blocking')]
+        questions, escalate = [], []
+        for row in db.execute("SELECT id,payload FROM flow_questions WHERE task=? AND status='open'",
+                              (tid,)):
+            payload = json.loads(row['payload'])
+            if not payload.get('blocking'):
+                continue
+            category = escalation_category(payload)
+            if category is None:
+                questions.append(row['id'])
+            else:
+                escalate.append({'question': row['id'], 'category': category})
     return {'degrade': degrade, 'budget_extension': budget,
-            'resolve_question': questions, 'must_escalate': list(MUST_ESCALATE)}
+            'resolve_question': questions, 'must_escalate': list(MUST_ESCALATE),
+            'escalation_questions': escalate}
 
 
 def _stop(store, task, result, reasons, **extra):
@@ -187,9 +219,14 @@ def knowledge_followup(task, goal, phase):
     }
 
 
+#: An iteration candidate may be accepted while it is this much slower than the
+#: baseline. It is part of the plan a person agreed to, never of the candidate.
+MAX_REGRESSION_CAP = 0.5
+
+
 def validate_plan(plan):
     """Validate a Flow plan; shared by start/replan and the site generator."""
-    if not isinstance(plan, dict) or set(plan) - (set(DEFAULTS) | {'acceptance'}):
+    if not isinstance(plan, dict) or set(plan) - (set(DEFAULTS) | {'acceptance', 'max_regression'}):
         raise FlowError('Unknown flow-plan fields')
     plan = {**DEFAULTS, **plan}
     for key in DEFAULTS:
@@ -197,6 +234,11 @@ def validate_plan(plan):
             raise FlowError('Flow limits must be positive integers')
     if not 1 <= plan['poll_seconds'] <= 3600:
         raise FlowError('Guidance polling interval must be 1..3600 seconds')
+    if 'max_regression' in plan:
+        value = plan['max_regression']
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not 0 <= value <= MAX_REGRESSION_CAP:
+            raise FlowError('max_regression must be a number between 0 and '
+                            + str(MAX_REGRESSION_CAP))
     acceptance = plan.get('acceptance')
     if (not isinstance(acceptance, dict) or not acceptance
             or any(not isinstance(value, str) or not value.strip() for value in acceptance.values())):
@@ -423,9 +465,16 @@ def resolve_question(store, tid, qid, value):
     with store.db() as db:
         if not get_flow(db, tid):
             raise FlowError('Start the collaborative flow first')
-        row = db.execute("SELECT status FROM flow_questions WHERE task=? AND id=?", (tid, qid)).fetchone()
+        row = db.execute("SELECT status,payload FROM flow_questions WHERE task=? AND id=?",
+                         (tid, qid)).fetchone()
         if not row:
             raise FlowError('Unknown question')
+        category = escalation_category(json.loads(row['payload']))
+        if category is not None:
+            # Authorization, acceptance, negative results and cancellation are
+            # listed in ``must_escalate``; the Agent may not close them itself.
+            raise FlowError('This question needs a human decision (' + category
+                            + '): ' + qid)
         already = row['status'] == 'closed'
     if already:
         return {'question': qid, 'status': 'closed', 'changed': False, 'board': render_board(store, tid)}
@@ -511,7 +560,12 @@ def profile_gates(task):
     if name is None:
         return None
     from . import catalog
-    return catalog.derived_gates(name)
+    try:
+        return catalog.derived_gates(name)
+    except catalog.ModuleContractError as exc:
+        # A profile that cannot produce a gate it covers fails loudly instead of
+        # handing the Flow a thinner requirement than the catalog implies.
+        raise FlowError("Declared profile cannot satisfy a flow gate: " + str(exc)) from None
 
 
 def expected_evidence(task, destination):
@@ -561,27 +615,49 @@ def required_reports(task, destination):
     return kinds
 
 
-def invariants(task):
+def _shown_budget(ceiling):
+    """A ceiling as JSON-safe values: an unbounded dimension is ``null``."""
+
+    shown = {}
+    for key in sorted(ceiling or {}):
+        value = ceiling[key]
+        shown[key] = None if isinstance(value, float) and not math.isfinite(value) else value
+    return shown
+
+
+def invariants(task, budget=None):
     """Constraints re-derived on every read, so a summary cannot narrow them.
 
     This is the answer to compaction: the gates, the acceptance boundary and
     the budget ceiling are recomputed from the store each time instead of
     being recalled from a conversation that may have lost them.
+
+    ``budget`` is the *effective* ceiling (declared spec, profile default and
+    approved extensions). Callers pass ``store.effective_budget`` so the number
+    a controller enforces is the number it is told about; without it the
+    declared spec is reported, which is what a store-less caller can know.
     """
 
     derived = profile_gates(task)
     gates = derived if derived is not None else {stage: list(kinds) for stage, kinds in GATES.items()}
     policy = autonomy(task) or {}
     escalation = policy.get('escalation') or {}
+    ceiling = dict(budget) if budget is not None else dict(task['spec'].get('budget') or {})
     return {
         'gates': {stage: sorted(set(kinds)) for stage, kinds in sorted(gates.items())},
         'acceptance_edit': escalation.get('acceptance_edit', 'forbid'),
-        'budget': task['spec'].get('budget') or {},
+        'budget': _shown_budget(ceiling),
         'profile': declared_profile(task),
         'autonomous': autonomy(task) is not None,
         'review_required': True,
         'stage_skills': sorted(set(STAGE_SKILLS.values())),
     }
+
+
+def effective_invariants(store, db, task):
+    """``invariants`` with the ceiling the store actually enforces."""
+
+    return invariants(task, store.effective_budget(db, task['id']))
 
 
 def brief_state(store, tid):
@@ -613,6 +689,7 @@ def brief_state(store, tid):
             'SELECT seq,kind FROM events WHERE task=? ORDER BY seq DESC LIMIT 8', (tid,))]
         extensions = db.execute('SELECT COUNT(*) FROM budget_extensions WHERE task=?',
                                 (tid,)).fetchone()[0]
+        ceiling = store.effective_budget(db, tid)
     acceptance = plan.get('acceptance') or {}
     candidate = None
     if last is not None and last['candidate']:
@@ -631,22 +708,29 @@ def brief_state(store, tid):
         'target': destination,
         'required_reports': required_reports(task, destination),
         'expected_evidence': expected_evidence(task, destination),
-        'invariants': invariants(task),
+        'limits': {key: plan.get(key) for key in (*sorted(DEFAULTS), 'max_regression')
+                   if key in plan},
+        'invariants': invariants(task, ceiling),
         'candidate': candidate,
         'reports': sorted(reports),
         'evidence': [sha for sha in evidence if sha],
         'open_questions': [{'id': q['id'], 'title': q['title'], 'blocking': q['blocking']}
                            for q in questions],
-        'budget': {'spec': task['spec'].get('budget') or {}, 'extensions': extensions},
+        'budget': {'spec': task['spec'].get('budget') or {},
+                   'effective': _shown_budget(ceiling),
+                   'extensions': extensions},
         'degradation': {'ladder': state['ladder'], 'used': state['used']},
         'recent_events': recent,
     }
 
 
+#: Fields whose change must invalidate a brief. The plan's loop limits belong
+#: here: shrinking ``max_rounds`` from 20 to 1 changes what the next action may
+#: be, so a write bound to the old brief must fail.
 BRIEF_TOKEN_FIELDS = ('task', 'state', 'revision', 'context', 'objective', 'acceptance',
                       'profile', 'autonomous', 'target', 'required_reports',
-                      'expected_evidence', 'invariants', 'candidate', 'open_questions',
-                      'budget', 'degradation')
+                      'expected_evidence', 'limits', 'invariants', 'candidate',
+                      'open_questions', 'budget', 'degradation')
 
 
 def brief_token(store, tid):
@@ -691,9 +775,14 @@ def align(store, tid):
     """Re-derive what this task is for and report every delta.
 
     This does not judge the work. It makes drift visible on a stage boundary:
-    a changed objective or acceptance, a profile that no longer matches the
-    context, or a stage the profile never planned has to be settled with
-    ``flow-replan`` and a reason instead of sliding in unnoticed.
+    an objective or acceptance that no longer matches the goal the Flow is
+    actually running under, a profile that no longer matches the context, or a
+    stage the profile never planned has to be settled with ``flow-replan`` and a
+    reason instead of sliding in unnoticed.
+
+    The anchor is the *current* goal snapshot, not the first one: a sanctioned
+    replan rewrites the goal, and comparing against the original made every
+    properly replanned task report drift forever.
     """
 
     task = store.task(tid)
@@ -701,8 +790,7 @@ def align(store, tid):
         row = get_flow(db, tid)
         if not row:
             raise FlowError('Start the collaborative flow first')
-        first = db.execute("SELECT payload FROM events WHERE task=? AND kind='flow-started'"
-                           " ORDER BY seq LIMIT 1", (tid,)).fetchone()
+        anchor = row.get('goal')
     deltas = []
     plan = row['plan']
     acceptance = plan.get('acceptance') or {}
@@ -720,23 +808,25 @@ def align(store, tid):
             required_reports(task, stage)
     except FlowError as exc:
         deltas.append({'kind': 'gate-widened', 'detail': str(exc)})
-    if first:
-        original = artifact_json(store, json.loads(first['payload'])['goal'])
-        started = (original.get('plan') or {}).get('acceptance') or {}
-        if fingerprint(started) != fingerprint(acceptance):
-            deltas.append({'kind': 'acceptance-changed-since-start',
-                           'from': fingerprint(started), 'to': fingerprint(acceptance),
+    if anchor:
+        agreed = artifact_json(store, anchor)
+        agreed_acceptance = (agreed.get('plan') or {}).get('acceptance') or {}
+        if fingerprint(agreed_acceptance) != fingerprint(acceptance):
+            deltas.append({'kind': 'acceptance-mismatch',
+                           'from': fingerprint(agreed_acceptance), 'to': fingerprint(acceptance),
                            'action': 'flow-replan'})
-        if original.get('objective') != (plan.get('objective') or task['spec'].get('objective')):
-            deltas.append({'kind': 'objective-changed-since-start',
-                           'from': original.get('objective'),
-                           'to': plan.get('objective') or task['spec'].get('objective'),
+        objective = plan.get('objective') or task['spec'].get('objective')
+        if agreed.get('objective') != objective:
+            deltas.append({'kind': 'objective-mismatch',
+                           'from': agreed.get('objective'), 'to': objective,
                            'action': 'flow-replan'})
+    with store.db() as db:
+        ceiling = store.effective_budget(db, tid)
     result = {'task': tid, 'state': task['state'], 'profile': profile,
               'status': 'drift' if deltas else 'aligned',
               'deltas': deltas, 'next': 'flow-replan' if deltas else 'continue',
               'acceptance': fingerprint(acceptance),
-              'gates': invariants(task)['gates']}
+              'gates': invariants(task, ceiling)['gates']}
     if deltas:
         with store.db() as db:
             store.event(db, tid, 'flow-aligned', {'deltas': deltas, 'state': task['state']})
@@ -775,8 +865,16 @@ def gate(store, db, task, candidate):
             else:
                 for sha in inputs['correctness'].get('evidence', []):
                     store.artifact(sha)
+                # The tolerance belongs to the task, not to the candidate being
+                # judged: otherwise a candidate can declare a 1e9 regression
+                # budget and keep a five-times-slower result.
+                if 'max_regression' in inputs:
+                    reasons.append('experiment-declares-its-own-threshold')
+                    return reasons
+                flow_row = get_flow(db, task['id'])
+                threshold = (flow_row['plan'] if flow_row else {}).get('max_regression', 0.0)
                 try:
-                    assessment = assess_iteration(**inputs)
+                    assessment = assess_iteration(**inputs, max_regression=threshold)
                 except (ValueError, TypeError, KeyError):
                     assessment = {'status': 'invalid-experiment'}
                 if assessment['status'] != 'iteration-kept':
@@ -832,7 +930,7 @@ def next_step(store, tid):
             raise FlowError('Start the collaborative flow first')
         result = {'task': tid, 'state': task['state'], 'context': task['context'], 'goal': flow['goal'],
                   'profile': task['spec'].get('profile'),
-                  'invariants': invariants(task),
+                  'invariants': invariants(task, store.effective_budget(db, tid)),
                   'file_questions': {'pending': inbox['pending'], 'path': inbox['path'], 'scan_error': inbox['scan_error'], 'blocking': False}}
         row = last_round(db, tid)
         if row and row['status'] == 'accepted':
@@ -875,6 +973,14 @@ def next_step(store, tid):
                 team_reasons = completion_blockers(db, tid)
                 if team_reasons:
                     return {**result, 'action': 'coordinate', 'reasons': team_reasons, 'team': schedule(store, tid)}
+                if problems:
+                    # The round budget also bounds the repair loop: counting
+                    # only finished rounds let a controller submit forever.
+                    spent = db.execute('SELECT COUNT(*) FROM flow_rounds WHERE task=? AND goal=?',
+                                       (tid, flow['goal'])).fetchone()[0]
+                    if spent >= flow['plan']['max_rounds']:
+                        return _stop(store, task, result, ['round-budget-or-progress-plateau'],
+                                     rounds=spent, round=row['number'])
                 return {**result, 'action': 'repair' if problems else 'advance' if row['status'] == 'accepted' else 'review',
                         'round': row['number'], 'candidate': row['candidate'], 'review': row['review'], 'reasons': problems,
                         'full_alignment_required': row['number'] % flow['plan']['full_review_every'] == 0 or candidate['target'] in {'scale_ready', 'training', 'completed'}}

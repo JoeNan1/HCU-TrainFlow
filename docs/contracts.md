@@ -82,7 +82,9 @@ baseline/candidate 各含 context、sample_fingerprint、aggregation、executed�
 
 程序在登记和后续阶段推进时重新计算对照，要求 `status=pass`、`stage_eligible=true`、当前 context 和候选快照匹配。只填报告的 pass 或自行声明 stage_eligible 不能代替输入。历史报告原件仍可读，但未包含这些证据的旧通过记录不再授予新的阶段晋级；只能根据原始资料补全可追溯证据或补验，不能捏造身份。程序检查身份一致性和证据完整性，原始清单是否真实仍由负责 Agent 与独立 reviewer 核实。
 
-`iteration-check` 输入 correctness、baseline_times、candidate_times、context、可选 max_regression。correctness 另要求 profiler_off=true 和 measurement_protocol。至少三次匹配性能重复，输出 iteration-kept 仍是 pending-stage-validation，不是生产默认。
+`iteration-check` 输入 correctness、baseline_times、candidate_times、context。correctness 另要求 profiler_off=true 和 measurement_protocol。至少三次匹配性能重复，输出 iteration-kept 仍是 pending-stage-validation，不是生产默认。
+
+**允许的回退额度属于任务，不属于候选**：`max_regression` 只在 PLAN 中声明（0–0.5），`flow.gate` 用它判定 `iteration-kept`。experiment 文档里出现 `max_regression` 时直接以 `experiment-declares-its-own-threshold` 拒绝——否则候选只要写一个 1e9 的额度，就能把 5 倍变慢判成可接受。
 
 数值记录的显式 `status` 只能为 `pass`；blocked/rejected/unknown 等均不能作为通过的证据。历史记录可省略 status，但仍须具备实际执行、候选 dispatch、非空证据 ID 数组和完整覆盖。baseline/candidate 的 steps 均独立验证为严格递增整数，布尔值或浮点数不等同于训练步数。冻结 context 应包含初始模型/优化器/RNG 状态及有效 batch 等比较身份，仅 loss 数字相近不能证明这些条件匹配。
 
@@ -104,19 +106,19 @@ Graph 关联得到的 CPU 输入形状是调用上下文，不自动等于每个
 
 协作循环还要求 candidate_snapshot 与候选清单 artifact 相同。候选、独立 review、目标与人的回复契约见 [协作循环](collaboration.md)；不要只调用 task-transition 跳过已登记的 review。
 
-`report-add` 另外接受可选的 `claims`，字段封闭：`{id, statement, stage?, value?, source?: {artifact, path}, candidate_snapshot?}`。登记时程序机械校验四类问题——**引用**（被引对象存在，且不属于其他任务；`public` 对象可按共享基线跨任务引用）、**数值**（`value` 与 `path` 处的原值一致，浮点按 1e-9 相对容差，布尔不与数字互通）、**流程**（`stage` 必须是该任务 profile 覆盖的阶段）、**范围**（`candidate_snapshot` 必须等于报告快照）——任一不满足即拒绝登记。声明了 `spec.profile` 的任务，pass 的**由 Agent 撰写**报告必须给出 claims；capability/Pipeline 自己算出的报告（`agent_authored=false`）不强制，但它写出的 claims 照旧校验；未声明 profile 的旧任务仍可省略。
+`report-add` 另外接受可选的 `claims`，字段封闭：`{id, statement, stage?, value?, source?: {artifact, path}, candidate_snapshot?}`。登记时程序机械校验四类问题——**引用**（被引对象存在，且不属于其他任务；`public` 对象可按共享基线跨任务引用）、**数值**（`value` 与 `path` 处的原值一致，浮点按 1e-9 相对容差且无绝对下限（两侧均为零才判等），布尔不与数字互通）、**流程**（`stage` 必须是该任务 profile 覆盖的阶段）、**范围**（`candidate_snapshot` 必须等于报告快照）——任一不满足即拒绝登记。声明了 `spec.profile` 的任务，`pass` 或 `complete` 的**由 Agent 撰写**报告必须给出 claims（`complete` 同样是 `analysis` 门禁可接受的状态）；capability/Pipeline 自己算出的报告（`agent_authored=false`）不强制，但它写出的 claims 照旧校验；未声明 profile 的旧任务仍可省略。
 
-归属来自记录该对象的事件、Pipeline 步骤或操作结果。本规则生效之前写入的 store 没有这些记录，证据因此是"无主"的——`evidence-backfill [TASK]` 从已登记报告正文补写归属（幂等），补写前借用检查对这些对象不生效；`scripts/audit_report_history.py` 会报告每个 store 还有多少条无主证据。`report-verify TASK KIND` 可对已登记报告重跑同一套校验并列出问题，不修改任何状态。
+归属来自记录该对象的事件、Pipeline 步骤或操作结果；操作结果与步骤结果里的 `evidence` 是数组，按成员归属（对象只要出现在某任务的执行产出里，就属于该任务）。登记被拒的报告（含 shadow 模式）不会写入归属，所以测量模式不会把借来的证据变成自己的。本规则生效之前写入的 store 没有这些记录，证据因此是"无主"的——`evidence-backfill [TASK]` 从已登记报告正文补写归属（幂等），补写前借用检查对这些对象不生效；`scripts/audit_report_history.py` 会报告每个 store 还有多少条无主证据。`report-verify TASK KIND` 可对已登记报告重跑同一套校验并列出问题，不修改任何状态。
 
 ## StateBrief 与 turn 绑定
 
 `flow-brief TASK` 由存储拼装当前状态的一页摘要：目标与验收指纹、context、state/revision、profile、`invariants`（门禁、acceptance_edit 策略、预算硬顶）、candidate 快照、可用证据 ID、未决问题、预算与降级剩余、最近事件与阅读入口，并返回 `brief_hash`。它不接受任何作为判定的总结：agent 的 `--notes` 只作附注保留，不改变门禁、报告要求或预算，所以"摘要里说过了"不构成任何约束。
 
-`brief_hash` 覆盖的是**决定下一步动作的那部分状态**（目标、验收、context、state/revision、profile、门禁不变量、候选快照、未决问题、预算与降级），不含证据清单与最近事件尾部——否则每写一份报告都会把哈希挪走，把正常步骤变成误报的 `stale-brief`。
+`brief_hash` 覆盖的是**决定下一步动作的那部分状态**（目标、验收、context、state/revision、profile、门禁不变量、循环限制 `limits`、候选快照、未决问题、预算与降级），不含证据清单与最近事件尾部——否则每写一份报告都会把哈希挪走，把正常步骤变成误报的 `stale-brief`。
 
-`flow-submit TASK FILE --brief-hash H` 与 `report-add TASK KIND FILE --brief-hash H` 用 H 绑定"这次动作基于哪一版状态"；状态已变返回 `stale-brief`。自主任务（`spec.autonomy`）提交候选必须带 brief 哈希，缺省即 `unverified-turn`：无人监督时不允许凭记忆推进。`flow-next` 的输出同时带 `invariants`，每次决策重新下发，而不是复用会话里的旧值。
+`flow-submit TASK FILE --brief-hash H` 与 `report-add TASK KIND FILE --brief-hash H` 用 H 绑定"这次动作基于哪一版状态"；状态已变返回 `stale-brief`。自主任务（`spec.autonomy`）提交候选必须带 brief 哈希，缺省即 `unverified-turn`：无人监督时不允许凭记忆推进。`flow-next` 的输出同时带 `invariants`，每次决策重新下发，而不是复用会话里的旧值；其中的 `budget` 是**生效上限**（声明预算、profile 默认与已批准追加合并后的值），无上限的维度显示为 `null` 而不是无限大。
 
-`flow-align TASK` 从存储的 plan 重新导出目标、验收、profile 与实际阶段，逐项列出 delta：验收或目标自起始改变、profile 与 context 不再匹配、当前阶段超出 profile、门禁被放宽。无 delta 为 `aligned`；有 delta 为 `drift`，要求 `flow-replan` 记录理由，并写入 `flow-aligned` 事件供复核。
+`flow-align TASK` 从存储的 plan 重新导出目标、验收、profile 与实际阶段，逐项列出 delta：验收或目标与当前目标快照不一致（即有改动没有留下 `flow-replanned`）、profile 与 context 不再匹配、当前阶段超出 profile、门禁被放宽。无 delta 为 `aligned`；有 delta 为 `drift`，要求 `flow-replan` 记录理由，并写入 `flow-aligned` 事件供复核。合法重规划会更新目标快照，因此不会长期停留在 drift。
 
 ## Assignment 与接手
 

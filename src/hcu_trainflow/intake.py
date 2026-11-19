@@ -29,7 +29,7 @@ TASK_KEYS = {"task_id", "mode", "objective", "acceptance", "plan", "profile",
              "budget", "use", "recovery_owner", "external_job"}
 USE_KEYS = {"contracts", "commands"}
 PLAN_KEYS = {"max_rounds", "max_stalled_rounds", "full_review_every",
-             "max_review_failures", "poll_seconds"}
+             "max_review_failures", "poll_seconds", "max_regression"}
 LEASE_KEYS = {"resource", "owner", "ttl"}
 
 DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")

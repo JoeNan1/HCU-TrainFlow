@@ -44,9 +44,18 @@ def select(*, profile: str | None = None, subworkflow: str | None = None,
     chosen = [value for value in (profile, subworkflow, modules) if value is not None]
     if len(chosen) != 1:
         raise ModuleContractError("Declare exactly one of profile, subworkflow or modules")
+    if stages is not None and not stages:
+        # An empty scope used to collapse to ``None`` and silently disable the
+        # stage-evidence check; ask for what was meant instead.
+        raise ModuleContractError("Stage scope must be nonempty")
     if profile is not None:
         from .profiles import profile as get_profile
         entry = get_profile(profile)
+        if stages is not None and not set(stages) <= set(entry.stages):
+            # A caller may narrow a profile's scope, never widen it.
+            raise ModuleContractError(
+                "Stages outside the declared profile scope: "
+                + ", ".join(sorted(set(stages) - set(entry.stages))))
         resolved = _module_list(entry.module_ids())
         name, scope = "profile:" + entry.id, tuple(stages or entry.stages)
     elif subworkflow is not None:
@@ -56,8 +65,6 @@ def select(*, profile: str | None = None, subworkflow: str | None = None,
     else:
         resolved = _module_list(modules or ())
         name, scope = "modules", (tuple(stages) if stages else None)
-    if scope is not None and not scope:
-        raise ModuleContractError("Stage scope must be nonempty")
     return {"name": name, "modules": resolved, "stages": scope}
 
 
@@ -66,14 +73,18 @@ def interface(modules: Iterable[Module | str]) -> dict[str, Any]:
 
     ``requires`` is every member requirement that no other member satisfies
     under the auto-wiring rule (same key, compatible type), so it is exactly
-    what a caller has to provide.  ``provides`` unions member outputs.
+    what a caller has to provide.  ``provides`` unions member outputs. Both are
+    canonicalised (members in id order, alternative types sorted) because the
+    surface describes a *set*: the same members in another order used to
+    produce a different string.
     """
 
-    entries = _entries(modules)
+    entries = sorted(_entries(modules), key=lambda module: module.id)
     requires: dict[str, str] = {}
-    provides: dict[str, str] = {}
+    provided: dict[str, set] = {}
     for module in entries:
-        provides.update(module.provides)
+        for key, kind in module.provides.items():
+            provided.setdefault(key, set()).update(kind.split("|"))
     for module in entries:
         for key, kind in module.requires.items():
             wanted = set(kind.split("|"))
@@ -82,10 +93,12 @@ def interface(modules: Iterable[Module | str]) -> dict[str, Any]:
                             for other in entries)
             if satisfied:
                 continue
-            previous = requires.get(key)
-            requires[key] = kind if previous in (None, kind) else previous + "|" + kind
+            merged = set(requires.get(key, "").split("|")) - {""}
+            requires[key] = "|".join(sorted(merged | wanted))
     reports = sorted({module.report for module in entries if module.report})
-    return {"requires": requires, "provides": provides, "reports": reports,
+    return {"requires": requires,
+            "provides": {key: "|".join(sorted(types)) for key, types in sorted(provided.items())},
+            "reports": reports,
             "evidence": sorted(module.id for module in entries if module.report)}
 
 
