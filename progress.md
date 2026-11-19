@@ -659,3 +659,4 @@ HCU-Knowledge阶段已提交3829ef06、tag v0.5.6，两远端核对current且工
 - 记录当前三处缺口（不隐去）：非 full 模式的 `invariants.gates` 与 `required_reports` 口径不一致；`analyze`/`diagnose` 带引擎时需要显式选 profile；`environment`/`operate` 尚无专属 profile。
 - 导航：README 文档索引与 `workflow-modules.md` §9 各加一行入口。
 - 验证：`check_documentation` 209 页 / 120 CLI 示例 / 50 JSON 示例 0 issues（新增的 13 条命令与 6 段 JSON 示例全部通过校验）。
+- 追加 §7 修订与 §8：区分"谁写 JSON"（格式由主控生成，`objective`/`context`/`acceptance`/`permissions`/`budget`/`autonomy` 的内容由人负责，`flow-start` 暂不强制确认），并按模块（24）、子工作流（16）、profile 分阶段（4）逐一列出人必须提供的输入；输入分 H（只有人能定）/S（现场事实）/A（主控实测或内部接线）三类。结论：人实际只给六类值，其余由主控实测、抽取或上游接线。

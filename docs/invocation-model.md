@@ -208,9 +208,117 @@ hcu-trainflow --workspace .work/T flow-brief  qwen3-8b-meg
 
 但"内容"有一条真实风险：`acceptance` 由主控起草，就可能写得比用户本意更松，而主控又恰好是被考核的一方。现有防线是：`acceptance_edit` 默认 `forbid`（运行中改不了）、`flow-align` 会把"验收自起始改变"列成 drift、`flow-brief` 原样列出条款供人核对；**开工前读一次 `flow-brief` 的 `acceptance.clauses`** 是这轮唯一不能省的人工动作。目前 `flow-start` 不强制"人已确认"，这是可以再收紧的地方。
 
-入口措辞仍是人和主控之间的接口，JSON 是主控与执行层之间的接口；两者的分界不在"谁敲键盘"，而在"谁对内容负责"。
+入口措辞仍是人和主控之间的接口，JSON 是主控与执行层之间的接口；两者的分界不在"谁敲键盘"，而在"谁对内容负责"。具体到每个模块、每个子工作流、每个阶段要人给哪些输入，见第 8 节。
 
-## 8. 已知缺口
+## 8. 人必须提供什么：按模块、按子工作流
+
+人提供的是**值**，主控把它写成文档。三类输入：
+
+| 标记 | 含义 | 例子 |
+| --- | --- | --- |
+| **H** | 只有人能定：授权、验收阈值、口径、现场启动方式与路径 | `contract`、`card`、`repository`、`resource`、`ttl` |
+| **S** | 现场事实，人可以给文件或给路径由主控读 | `project`、`trace`、`state_dir` |
+| **A** | 主控产出或实测：上游结果、实测值、从仓库抽取的快照 | `stdout_artifact`、`observations`、`*_times`、`config-snapshot` |
+
+### 8.1 输入类型总表
+
+| 输入 | 类型与归属 | 说明 |
+| --- | --- | --- |
+| `contract`（environment / occupancy / quality / training / adaptation） | **H** | 验收条件、阈值、容差、训练配方；主控只能照人的约定填 |
+| `full` / `candidate`（proxy-contract） | **H** | 缩模授权边界：允许缩到哪、缺口如何说明 |
+| `card`（command-card） | **H** | 实际启动命令、环境变量、工作目录；不得臆造 |
+| `resource` / `ttl` | **H** | 预约哪台设备、多久 |
+| `repository` / `paths` | **H/S** | 源码位置与纳入快照的路径 |
+| `project` / `trace` / `state_dir` | **S** | 现场路径 |
+| `manifest` / `policy`（observation-*） | **H** | 观测什么、多久一次、什么算异常 |
+| `upstream` / `hcu` / `mapping` | **H** | 适配对照的原始启动记录与映射依据（主控起草、人确认） |
+| `owner` | A | 会话/负责人标识，主控填 |
+| `operation` | A | 操作 ID，主控生成 |
+| `lease` | A | 由 `resource.lease` 产出，内部接线 |
+| `observations`（environment / occupancy） | A | 实测值；阈值仍来自 `contract` |
+| `stdout_artifact` / `files` | A | 上游执行产物与待封存文件清单 |
+| `baseline` / `candidate` / `correctness` / `*_times` / `before` / `after` | A | 实测记录、成对计时、配置快照 |
+| `window` / `intervals` | A | 从 trace 判读的窗口与通信区间 |
+| `verdict` / `analysis` / `baseline-summary` / `profile-result` | A | 上游模块产物，自动接线 |
+
+### 8.2 24 个模块：人必须给哪些输入
+
+| 模块 | 人必须提供 |
+| --- | --- |
+| `environment.probe` | `contract`（environment-contract） |
+| `resource.admission` | `contract`（occupancy-contract） |
+| `resource.lease` | `resource`、`ttl` |
+| `execution.command` | `card`（command-card） |
+| `execution.stdout-json` | — （`stdout_artifact` 由上游执行产出） |
+| `artifact.collect` | — （`files` 由执行目录/命令卡得出） |
+| `source.transfer` | `repository`、`paths` |
+| `training.summarize` | `contract`（training-contract） |
+| `training.summarize-torch` | `contract`（training-contract） |
+| `training.observe` | `manifest`、`policy`、`state_dir` |
+| `adaptation.launch-parity` | `upstream`、`hcu`（`mapping` 主控起草，人确认） |
+| `adaptation.config-diff` | — |
+| `adaptation.numeric-equivalence` | `contract`（adaptation-contract） |
+| `quality.loss` | `contract`（quality-contract） |
+| `quality.iteration` | — |
+| `quality.proxy` | `full`、`candidate`（proxy-contract） |
+| `quality.qualify` | — （三份输入全部可由上游模块提供） |
+| `profiling.trace` | `project`、`trace` |
+| `profiling.analyze` | `trace` |
+| `profiling.summarize` | — （内部接线） |
+| `profiling.communication` | — （`intervals` 从 trace 提取） |
+| `optimization.change` | — （`before`/`after` 从仓库与运行配置抽取） |
+| `optimization.benchmark` | — （成对计时由实测得到） |
+| `optimization.netgain` | — （两次测量由实测得到） |
+
+### 8.3 16 个子工作流：人必须给哪些输入
+
+| 子工作流 | 人必须提供 | 其余输入 |
+| --- | --- | --- |
+| `environment-readiness` | `contract`、`resource`、`ttl` | `observations` 实测 |
+| `environment-collect` | `card`、`contract` | `operation`、`lease`、`stdout_artifact` 内部或主控 |
+| `source-handoff` | `repository`、`paths` | `files` 主控 |
+| `baseline-megatron` | `card`、`contract`（training） | `operation`、`lease`、`files` |
+| `baseline-torch` | 同上 | 同上 |
+| `quality-accept` | `contract`（quality） | 两组 loss、成对计时由实测得到 |
+| `baseline-qualification` | — | 三份上游结果 |
+| `adaptation-proxy` | `full`、`candidate` | — |
+| `adaptation` | `upstream`、`hcu`、`contract`（adaptation） | `mapping` 主控起草；两组快照从仓库抽取 |
+| `training-observation` | `manifest`、`policy`、`state_dir` | — |
+| `hipprof-summary` | `project`、`trace` | — |
+| `trace-attribution` | `project`、`trace` | `window`、`intervals` 从 trace 判读 |
+| `optimization-netgain` | — | 快照与两次测量均由主控产出 |
+| `optimization-benchmark` | — | 同上 |
+| `profiling-tracelens` | `project`、`trace` | `window` 由主控 |
+| `baseline-pipeline` | `contract`、`card`、`project`、`trace` | 其余现场事实与实测 |
+
+### 8.4 4 个 profile：分阶段的人输入
+
+profile 的静态接口很大（`llm-megatron` 有 31 项），但**按阶段切片后每阶段只有 2–5 项要人给**：
+
+| 阶段 | 人必须提供（llm / torch-llm / vision 相同） | analysis-only |
+| --- | --- | --- |
+| `prepared` | 设备占用与环境契约、适配契约；`card`；`resource`、`ttl`；`repository`、`paths`；`upstream`、`hcu` | — |
+| `environment_checked` | training 契约；`card` | — |
+| `baseline_validated` | training 契约；`card`；`manifest`、`policy`、`state_dir`；两档 profile 另有 proxy 契约 | — |
+| `profiling` | `project`、`trace`；`card` | `project`、`trace`；`card` |
+| `optimizing` | quality 契约（容差与口径）；`project`、`trace` | — |
+| `scale_ready` | 设备占用与环境契约；`card` | — |
+| `training` | `resource`、`ttl`；`card`；`manifest`、`policy`、`state_dir` | — |
+
+`vision` 在 `baseline_validated` 少 proxy 契约（该 profile 不做代理校验）；其余同表。
+
+### 8.5 结论：人实际给的只有六件事
+
+1. **目标与验收条款**（`objective`、`acceptance`）——主控起草，人确认；
+2. **五类 `contract`**（环境/占用/质量/训练/适配）——阈值、容差、配方；
+3. **启动方式**（`card`）与**源码位置**（`repository`、`paths`）；
+4. **资源预约**（`resource`、`ttl`）与设备占用契约；
+5. **现场路径**（`project`、`trace`、`state_dir`）；
+6. **观测策略**（`manifest`、`policy`）与**缩模授权**（`full`/`candidate`）。
+
+其余输入由主控实测、抽取或由上游模块接线；人不需要写整份 JSON，只需要给这些值和一句确认。
+
+## 9. 已知缺口
 
 - 非 `full` 模式下 `flow-next` 的 `invariants.gates` 仍按全量门禁输出，而 `required_reports` 只要求该模式的交付报告：读 `invariants` 时以 `required_reports` 为准。
 - `analyze`/`diagnose` 且声明了 engine 时，路由会同时命中训练 profile 与 `analysis-only`，需要显式选择并记录理由。
