@@ -16,6 +16,7 @@
 | 模块化 Pipeline 输入 | [quality-pipeline.json](quality-pipeline.json) | 一个只做合成 loss 对照的 Pipeline；替换 context 和 evidence 后才能用于真实任务。任务态运行可用 `--task` 登记步骤 artifact |
 | 自主任务站点契约 | [autonomous-site.json](autonomous-site.json) | 一次输入的四段契约（task/autonomy/plan/site）；用[生成器](../scripts/build_autonomous_task.py)写出 task/plan/命令卡/准入契约，见[自主任务](../docs/autonomous-task.md) |
 | 模块与子工作流 | [module-plan.json](module-plan.json) | 用功能子工作流（或 profile、模块列表）声明一次运行的来源与输入；`module-plan` 只校验接线并给出派生门禁，`module-run` 才执行，见[模块化拆分与子工作流](../docs/workflow-modules.md) |
+| 可复用 intake | [intake.json](intake.json) | 站点与模型级事实（`site`/`source`/`paths`/`contracts`/`observation`/`authority`）加 `tasks[]` 差异：填一次、多个任务复用；字段含义与复用边界见[调用方式](../docs/invocation-model.md) |
 
 ## 怎么使用
 

@@ -1,0 +1,96 @@
+{
+  "schema_version": 1,
+  "revision": "2026-11-19",
+  "scope": {"site": "site-a", "engine": "megatron", "model_family": "llm", "model": "REPLACE-WITH-MODEL"},
+
+  "site": {
+    "ssh_target": "REPLACE-WITH-SSH-ALIAS",
+    "container": "REPLACE-WITH-TRAIN-CONTAINER",
+    "cwd": "/private/task-a/snapshot-REPLACE",
+    "commands": {
+      "environment": {"argv": ["bash", "collect_environment.sh"], "env": {},
+                      "timeout_seconds": 600, "basis": "REPLACE: 站点已验收的采集脚本与版本"},
+      "train": {"argv": ["bash", "run_pretrain.sh"], "env": {"WORLD_SIZE": "REPLACE-WITH-WORLD-SIZE"},
+                "timeout_seconds": 3600, "basis": "REPLACE: 该卡数已验证的启动配方"},
+      "profile": {"argv": ["bash", "run_profile.sh"], "env": {},
+                  "timeout_seconds": 900, "basis": "REPLACE: profiler-off/on 成对测量脚本"}
+    },
+    "devices": [
+      {"node": "REPLACE-WITH-NODE", "device": 0, "identity": "REPLACE-WITH-PCI-IDENTITY",
+       "idle_memory_bytes": 0, "memory_tolerance_bytes": 0, "max_utilization_pct": 2,
+       "basis": "REPLACE: 空载实测日期与出处"}
+    ],
+    "occupancy": {"max_age_seconds": 600, "min_observations": 3,
+                  "quiet_period_seconds": 120, "max_sample_gap_seconds": 60,
+                  "shared_resources": []},
+    "leases": [
+      {"resource": "hcu:REPLACE-WITH-NODE:REPLACE-WITH-PCI-IDENTITY",
+       "owner": "agent:coordinator", "ttl": 86400}
+    ]
+  },
+
+  "source": {"repository": "/private/task-a/source-REPLACE", "paths": ["train.py", "configs/"]},
+  "paths": {"project": "/private/task-a/source-REPLACE",
+            "trace": "/private/task-a/logs/trace-REPLACE.json",
+            "state_dir": "/private/task-a/logs/observe"},
+
+  "contracts": {
+    "environment": {"context": "REPLACE-WITH-TASK-CONTEXT-HASH", "required": []},
+    "quality": {"atol": 0.001, "rtol": 0.001, "min_steps": 100,
+                "aggregation": "global-valid-token-mean",
+                "tolerance_basis": "REPLACE: 数值容差的依据"},
+    "training": {"expected_steps": 100, "steady_start": 20},
+    "adaptation": {"components": ["forward", "backward"], "atol": 0.001},
+    "proxy": {"full": {"layers": "REPLACE-WITH-FULL-LAYERS"},
+              "candidate": {"layers": "REPLACE-WITH-PROXY-LAYERS"},
+              "gap": "REPLACE: 代理配置未覆盖的完整模型验收项"}
+  },
+
+  "observation": {"manifest": {}, "policy": {}, "state_dir": "/private/task-a/logs/observe"},
+
+  "authority": {
+    "permissions": ["execute", "sync"],
+    "budget": {"max_operations": 240, "max_seconds": 259200},
+    "autonomy": {
+      "mode": "autonomous",
+      "reviewers": ["agent:reviewer-1"],
+      "question_answers": [
+        {"match": "baseline", "answer": "使用 context 中冻结的初始基线，不重跑",
+         "source": "policy:baseline-choice"}
+      ],
+      "escalation": {
+        "degrade_ladder": [{"action": "micro_batch_down", "min": 1}],
+        "budget_extension": {"max_additions": 2, "operations_per_addition": 40,
+                             "hard_total_operations": 340},
+        "acceptance_edit": "forbid"
+      }
+    }
+  },
+
+  "tasks": [
+    {
+      "task_id": "model-env",
+      "mode": "environment",
+      "objective": "只检查这套设备是否适合训练",
+      "acceptance": {"environment": "所有分配设备与互联有可比预期和原始证据"},
+      "profile": {"id": "llm-megatron", "reason": "同一模型的轻量检查任务"},
+      "budget": {"max_operations": 40, "max_seconds": 21600},
+      "use": {"contracts": ["environment"], "commands": ["environment"]}
+    },
+    {
+      "task_id": "model-full",
+      "mode": "full",
+      "objective": "REPLACE: 跑通并优化，最后扩到目标卡数",
+      "acceptance": {
+        "environment": "所有分配设备与互联有可比预期和原始证据",
+        "quality": "阶段候选相对冻结初态通过约定的 loss 与梯度验证",
+        "performance": "给出热点覆盖、非通信上限模型与 profiler-off 整步收益",
+        "scale": "恢复完整模型、逐级扩 DP 域并稳定运行约定时长"
+      },
+      "profile": {"id": "llm-megatron", "reason": "完整流程"},
+      "budget": {"max_operations": 240, "max_seconds": 259200},
+      "use": {"contracts": ["environment", "quality", "training", "adaptation", "proxy"],
+              "commands": ["environment", "train", "profile"]}
+    }
+  ]
+}
