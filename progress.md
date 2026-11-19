@@ -642,3 +642,12 @@ HCU-Knowledge阶段已提交3829ef06、tag v0.5.6，两远端核对current且工
 - **3 性能**：新增 `scripts/bench_report_path.py`。定位到写入慢的根因不在新检查，而是 `context_epoch` 对 events 的全表扫描（7.6ms/次）；补 `events(task,kind,seq)` 与 `events(json_extract(payload,'$.artifact'))`/`events(task,seq)` 索引后，2 万事件 / 100 份报告场景 **p50 55.7 → 50.0 ms、p95 82.0 → 78.5 ms**——新检查约 3ms，被索引收益覆盖。新增 `tests/test_report_performance.py`：事件量放大 10 倍，报告耗时不得超过 3 倍（防回归成扫描）。
 - **4 残余风险**：`agent_authored` 只能由 runtime 传参，报告正文里写 `agent_authored:false` 不生效（测试锁定）；`report-verify` 现在返回 `unbound`（没有 `source` 的 claim）列表；复核硬规则写进 `collaboration.md` 与协调器 Skill——"没有 source 的 claim 不算覆盖验收项"。
 - 验证：全量 **1621 passed / 3 skipped**（512.58 秒）；文档 208 页 / 107 CLI 示例 / 44 JSON 示例 0 issues；Skill 资源与安装 `--check` current。
+
+## 2026-11-19：目录审计与三处修正
+
+- 起因：审"模块与子工作流是否合理"时用 `catalog` 导出与 `plan.build` 实跑，发现三处与声明不符的问题（其余检查通过：24 模块无孤儿、三个训练 profile 派生门禁与 `flow.GATES` 逐项相等、`only-narrower` 成立）。
+- **P1 整 profile 计划撞车**：`quality.qualify.analysis` 有两个候选产出者（`profiling.analyze`、`profiling.summarize`），`module-plan` 对 23 模块的 `llm-megatron` 报 `ambiguous-input`，即"选 profile 就能跑"实际需要手写绑定。按语义拆类型：`profiling.summarize` 保持 `analysis`（导出 `analysis_scope=hipprof-summary`，正是 `qualify_baseline` 的默认比对范围），`profiling.analyze` 改为 `analysis-report`。现在整 profile 计划只剩 `missing-input`（现场输入），`quality.qualify.analysis` 自动接摘要；要完整归因仍可显式绑定。`module-plan` 的多候选检查保留并有回归。
+- **P3 profile 承诺跑不到的模块**：`analysis-only` 声明 `stages=("profiling",)`，却含 `environment.probe`（prepared/scale_ready）与 `source.transfer`（prepared），按阶段切分会静默丢模块。移除这两个成员（7 → 5），保留 `optimizing: [analysis]` 门禁不变；并新增 `catalog.validate_scope()` 在构造时校验"成员必须服务一个已声明阶段"，防止再犯。
+- **P2 旧 preset 名失效**：`SUBWORKFLOW_ALIASES` 的键是字面量 `"quality.accept/assess"`，`quality.accept` 与 `quality.assess` 单独都解析失败，与"旧名仍可用"的声明不符。新增 `_legacy_names()` 按共享前缀展开（`quality.accept`、`quality.assess`），`subworkflow()` 同时查字面键与展开名。
+- 文档：`workflow-modules.md` profile 表（20/20/16/7 → 23/23/19/5）、成员阶段校验说明、`ambiguous-input` 段落改写为"类型区分 + 显式绑定"、别名说明、阅读面 4/18、护栏表 +2 行。
+- 验证：新增 `tests/test_catalog_scope.py`（6 项：成员阶段不变量、`validate_scope` 拒绝越界成员、整 profile 无歧义输入、analysis-only 清单与门禁、5 个旧名解析、未知名仍报错）；`tests/test_module_plan.py` 的歧义用例改为 monkeypatch 复现类型冲突，新增"默认接摘要"用例。全量回归与文档检查见下条。

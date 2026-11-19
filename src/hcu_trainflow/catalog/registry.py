@@ -220,7 +220,11 @@ MODULES: tuple[Module, ...] = (
         id="profiling.analyze", summary="热点/上限/归因",
         actions=("analyze",),
         requires={"trace": "path", "window": "window"},
-        provides={"analysis": "analysis"},
+        # Full attribution is not the same value as the hipprof summary that
+        # baseline qualification consumes by default (analysis_scope =
+        # "hipprof-summary"), so it gets its own type and no longer competes with
+        # profiling.summarize for quality.qualify's ``analysis`` input.
+        provides={"analysis": "analysis-report"},
         report="analysis", stage=("profiling",), role="analyze",
         tags={"engine": ("any",), "model_family": ("any",), "needs": ()},
         volatile=False, route="docs/tracelens-analysis.md",
@@ -296,11 +300,33 @@ ALIASES: Mapping[str, str] = {
 SUBWORKFLOWS: dict[str, Subworkflow] = {}
 
 # The functional layer started life as ``presets``; keep the old, dotted
-# spellings resolvable so existing documents keep working.
+# spellings resolvable so existing documents keep working.  A slash joins
+# alternative spellings that share the leading segments, so "quality.accept/
+# assess" publishes both ``quality.accept`` and ``quality.assess``.
 SUBWORKFLOW_ALIASES: Mapping[str, str] = {
     "quality.accept/assess": "quality-accept",
     "profiling.tracelens": "profiling-tracelens",
     "environment.collect": "environment-collect",
+}
+
+
+def _legacy_names(legacy: str) -> tuple[str, ...]:
+    """Expand one alias spelling into every name a reader would type."""
+
+    parts = [part.strip() for part in legacy.split("/") if part.strip()]
+    if not parts:
+        return ()
+    head = parts[0]
+    prefix = head.rsplit(".", 1)[0] + "." if "." in head else ""
+    names = [head]
+    names.extend(part if "." in part else prefix + part for part in parts[1:])
+    return tuple(names)
+
+
+LEGACY_SUBWORKFLOW_NAMES: Mapping[str, str] = {
+    name: target
+    for legacy, target in SUBWORKFLOW_ALIASES.items()
+    for name in _legacy_names(legacy)
 }
 
 
@@ -547,9 +573,10 @@ def subworkflow(name: str) -> Subworkflow:
     try:
         return SUBWORKFLOWS[name]
     except KeyError:
-        if name in SUBWORKFLOW_ALIASES:
-            return SUBWORKFLOWS[SUBWORKFLOW_ALIASES[name]]
-        raise ModuleContractError("Unknown subworkflow: " + name) from None
+        target = SUBWORKFLOW_ALIASES.get(name) or LEGACY_SUBWORKFLOW_NAMES.get(name)
+        if target is None:
+            raise ModuleContractError("Unknown subworkflow: " + name) from None
+        return SUBWORKFLOWS[target]
 
 
 preset = subworkflow

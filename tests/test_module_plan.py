@@ -1,4 +1,5 @@
 """Automatic wiring is declared, validated and never guessed."""
+import dataclasses
 import json
 
 import pytest
@@ -26,7 +27,14 @@ def test_unique_provider_is_wired_automatically():
     PipelinePlan.from_dict(built["plan"])
 
 
-def test_two_providers_are_reported_not_guessed():
+def test_two_providers_are_reported_not_guessed(monkeypatch):
+    # The catalog avoids this collision by typing the two analyses differently;
+    # the check must stay live for any future module that advertises the same
+    # type for the same input.
+    registry = catalog.registry
+    module = registry.module("profiling.analyze")
+    monkeypatch.setitem(registry._BY_ID, "profiling.analyze",
+                        dataclasses.replace(module, provides={"analysis": "analysis"}))
     built = catalog.build_plan(
         modules=["profiling.analyze", "profiling.summarize", "quality.qualify"],
         inputs={**CANNOT_QUALIFY, "trace": "trace.json", "window": {"start": 1}})
@@ -36,12 +44,29 @@ def test_two_providers_are_reported_not_guessed():
     assert set(ambiguous[0]["candidates"]) == {"profiling.analyze", "profiling.summarize"}
 
 
-def test_explicit_binding_resolves_the_ambiguity():
+def test_analysis_input_binds_to_the_hipprof_summary_by_default():
+    """Qualification defaults to analysis_scope=hipprof-summary, so the wiring
+    picks the summary; the full attribution analysis is a different value and
+    only reaches qualify through an explicit binding."""
+
+    assert catalog.module("profiling.summarize").provides["analysis"] == "analysis"
+    assert catalog.module("profiling.analyze").provides["analysis"] == "analysis-report"
+    built = catalog.build_plan(
+        modules=["profiling.analyze", "profiling.summarize", "quality.qualify"],
+        inputs={**CANNOT_QUALIFY, "trace": "trace.json", "window": {"start": 1}})
+    assert built["status"] == "pass", built["problems"]
+    qualify = next(step for step in built["plan"]["steps"] if step["id"] == "quality.qualify")
+    assert qualify["bindings"] == {"analysis": {"step": "profiling.summarize", "path": ["analysis"]}}
+
+
+def test_explicit_binding_can_name_the_other_provider():
     built = catalog.build_plan(
         modules=["profiling.analyze", "profiling.summarize", "quality.qualify"],
         inputs={**CANNOT_QUALIFY, "trace": "trace.json", "window": {"start": 1}},
-        bindings={"quality.qualify.analysis": {"step": "profiling.summarize", "path": ["analysis"]}})
+        bindings={"quality.qualify.analysis": {"step": "profiling.analyze", "path": ["analysis"]}})
     assert built["status"] == "pass", built["problems"]
+    qualify = next(step for step in built["plan"]["steps"] if step["id"] == "quality.qualify")
+    assert qualify["bindings"] == {"analysis": {"step": "profiling.analyze", "path": ["analysis"]}}
 
 
 def test_missing_inputs_and_unsatisfied_needs_are_listed():

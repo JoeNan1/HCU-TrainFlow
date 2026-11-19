@@ -18,7 +18,8 @@ from .contracts import (
 )
 from .gates import compare_to_flow, derive, evidence_reports, flow_gates, missing_producers, stage_scope
 from .plan import build as build_plan, interface, preset_plan, select, subworkflow_plan
-from .profiles import PROFILES, derived_gates, profile, profiles, resolve as resolve_profile, route_surface
+from .profiles import (PROFILES, derived_gates, profile, profiles, resolve as resolve_profile,
+                       route_surface, validate_scope)
 from .registry import (ALIASES, MODULES, SUBWORKFLOW_ALIASES, SUBWORKFLOWS, aliases, module,
                        modules, preset, presets,
                        resolve, subworkflow, subworkflows, validate_catalog, validate_subworkflow)
@@ -31,5 +32,5 @@ __all__ = [
     "missing_producers", "module", "modules", "preset", "preset_plan", "presets",
     "profile", "profiles", "resolve", "resolve_profile", "route_surface", "select",
     "stage_scope", "subworkflow", "subworkflow_plan", "subworkflows",
-    "validate_catalog", "validate_subworkflow",
+    "validate_catalog", "validate_scope", "validate_subworkflow",
 ]

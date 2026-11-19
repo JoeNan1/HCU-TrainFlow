@@ -63,13 +63,38 @@ _profile(
 _profile(
     "analysis-only",
     applies_to={"mode": ("analyze", "diagnose")},
-    modules=("environment.probe", "execution.command", "execution.stdout-json",
-             "artifact.collect", "source.transfer",
-             "profiling.trace", "profiling.analyze"),
+    # Only modules that actually serve the declared stage: environment.probe and
+    # source.transfer live in ``prepared``, so a profiling-only scope could never
+    # run them. Analysis tasks that still need them run those modules explicitly;
+    # a profile is a default set, not a whitelist.
+    modules=("execution.command", "execution.stdout-json",
+             "artifact.collect", "profiling.trace", "profiling.analyze"),
     stages=("profiling",),
     defaults={"budget": {"max_operations": 40, "max_seconds": 21600}},
-    notes="只读分析：不给任何 optimization.* 与日志摘要，不推进阶段，只产 analysis 门禁；与引擎无关",
+    notes="只读分析：不给任何 optimization.* 与日志摘要，不推进阶段，只产 analysis 门禁；"
+          "与引擎无关。环境探针与源码交接属于 prepared，按单模块显式运行，不在本 profile 内",
 )
+
+
+def validate_scope(entry: Profile) -> None:
+    """Every member module must serve at least one stage the profile declares.
+
+    Otherwise a stage slice silently drops it: the profile promises a module it
+    can never run, and ``required_reports`` is derived from a set the run cannot
+    actually produce.
+    """
+
+    outside = [module_id for module_id in entry.module_ids()
+               if not set(registry.module(module_id).stage) & set(entry.stages)]
+    if outside:
+        raise ModuleContractError(
+            "Profile member serves none of its declared stages: "
+            + entry.id + " -> " + ", ".join(outside))
+
+
+for _entry in PROFILES.values():
+    validate_scope(_entry)
+del _entry
 
 
 def profiles() -> dict[str, Profile]:

@@ -138,7 +138,7 @@
 | `scale.admission` | `resource.admission` |
 | `environment.check` / `environment.occupancy` / `observation.collect` | 旧 capability 名，同样只映射到目录内条目 |
 
-子工作流的旧名同样保留：`quality.accept/assess` → `quality-accept`、`profiling.tracelens` → `profiling-tracelens`、`environment.collect` → `environment-collect`。
+子工作流的旧名同样保留：`quality.accept` 与 `quality.assess` → `quality-accept`、`profiling.tracelens` → `profiling-tracelens`、`environment.collect` → `environment-collect`。斜杠写法表示共享前缀的多个旧名，每个旧名单独也能解析（`tests/test_catalog_scope.py`）。
 
 `profiling.trace` 内部已完成采集与原件封存，所以 `profiling-tracelens` 不再重复插入 `artifact.collect`——设计稿里那一步是重复计数，已修正。
 
@@ -174,10 +174,12 @@ profile 用 `subworkflows`（组合）或 `modules`（直接列，二者只能�
 
 | profile | 模块 | 派生门禁 |
 | --- | --- | --- |
-| `llm-megatron` | 20（无 `training.summarize-torch`） | 与现行 `flow.GATES` 完全相同 |
-| `torch-native-llm` | 20（无 `training.summarize`） | **与 llm-megatron 相同**：只换日志摘要模块，门禁一项不减 |
-| `torch-native-vision` | 16（无 `training.summarize`、`quality.proxy`、`quality.qualify`、`optimization.benchmark`、`profiling.summarize`） | **与 llm-megatron 相同**：只减少执行模块，门禁一项不减 |
-| `analysis-only` | 7（只读，不给任何 `optimization.*` 与日志摘要） | 仅 `{"optimizing": ["analysis"]}`（`stages = ["profiling"]`） |
+| `llm-megatron` | 23（无 `training.summarize-torch`） | 与现行 `flow.GATES` 完全相同 |
+| `torch-native-llm` | 23（无 `training.summarize`） | **与 llm-megatron 相同**：只换日志摘要模块，门禁一项不减 |
+| `torch-native-vision` | 19（无 `training.summarize`、`quality.proxy`、`quality.qualify`、`optimization.benchmark`、`profiling.summarize`） | **与 llm-megatron 相同**：只减少执行模块，门禁一项不减 |
+| `analysis-only` | 5（只读，不给任何 `optimization.*` 与日志摘要） | 仅 `{"optimizing": ["analysis"]}`（`stages = ["profiling"]`） |
+
+每个 profile 成员都必须服务至少一个它声明的阶段（`catalog.validate_scope`，构造时即校验）：否则按阶段切分会静默丢掉这个模块，而 `required_reports` 又是从它推出来的。`analysis-only` 因此不含 `environment.probe` 与 `source.transfer`——它们属于 `prepared`，需要时按单模块显式运行；profile 是默认集，不是白名单。
 
 设计稿曾写 vision "无 `scale`"。实现时发现那等于砍掉训练准入的一份证据，违反不变量 6，因此改正为：**子工作流只减少模块，不减少门禁**；唯一门禁更窄的 profile 是 `analysis-only`，因为它明确不做训练阶段（`stages` 只到 `profiling`）。
 
@@ -261,7 +263,7 @@ hcu-trainflow --workspace /private/task/store module-run /private/task/modules.j
 
 自动连线规则：**同名 + 类型匹配 + 唯一提供者**。多候选或缺失一律报错，不静默猜测；显式绑定的键在输入名唯一时写 `<input>`，否则写 `<module>.<input>`。报告登记由 `report` 派生到步骤 `config.report_kind`，仅在任务绑定时生效，且没有真实证据的步骤只留 incomplete（不会把摘要当成原件）。
 
-把整个 `llm-megatron`（23 个模块）一次性 `module-plan` 会得到 `ambiguous-input` 与 `missing-input`：`analysis` 有两个产出者（`profiling.analyze` 与 `profiling.summarize`），且多数输入来自现场。这是预期结果——profile 声明的是"这个场景需要哪些模块"，实际运行总是取子集或功能子工作流；`module-plan` 的价值正是把这种不可能接线提前说清楚，而不是猜一个。
+把整个 `llm-megatron`（23 个模块）一次性 `module-plan` 只剩 `missing-input`：多数输入来自现场，profile 声明的是"这个场景需要哪些模块"，实际运行总是取子集或功能子工作流。**不应出现 `ambiguous-input`**——`profiling.summarize` 提供 `analysis`（导出 `analysis_scope=hipprof-summary`，正是短基线资格默认比对的范围），`profiling.analyze` 提供 `analysis-report`，两者类型不同，所以 `quality.qualify.analysis` 自动接到摘要；要改用完整归因，写一条显式绑定即可。若这两个模块将来又一次广告同一类型，`module-plan` 会照旧报 `ambiguous-input` 而不是替调用方猜一个。
 
 `baseline-pipeline` 子工作流是声明式的（template），`services.baseline_pipeline(...)` 就是它的调用入口——同一份接线同时服务 Python 与 `module-run`，因此不存在两份实现。
 
@@ -273,7 +275,7 @@ hcu-trainflow --workspace /private/task/store module-run /private/task/modules.j
 | 标签词表失控 | 闭合词表 + 新增需评审（`Module` 构造即校验） |
 | 别名偷偷并存 | 别名只能指向目录内条目，且不能遮蔽模块 id |
 | 路由变成第二状态机 | 只返回候选与理由，不推进阶段 |
-| 分流后阅读面没变薄 | `analysis-only` 阅读面 6/18 ≈ 0.33，`torch-native-vision` 16/18 ≈ 0.89 |
+| 分流后阅读面没变薄 | `analysis-only` 阅读面 4/18 ≈ 0.22，`torch-native-vision` 16/18 ≈ 0.89 |
 | 门禁被顺手放宽 | `llm-megatron` 派生 == `flow.GATES`；profile 派生 ⊆ 全量且 `missing_producers` 为空；`required_reports` 对 profile 未覆盖的阶段回落全量门禁，派生更宽直接报错 |
 | 优化/适配模块把"判断"伪装成"计算" | 19–21、22–24 只产证据，`limits` 与 `stage_equivalent` 字段显式声明边界 |
 | 契约与实现漂移 | 每个模块都映射到已注册 capability/action，测试逐项核对 |
@@ -281,6 +283,8 @@ hcu-trainflow --workspace /private/task/store module-run /private/task/modules.j
 | 报告正文的数字与原件不符 | `claims` 逐条解析 `source.path` 并与 `value` 比对；profile 任务的 pass 必须带 claims |
 | 上下文被压缩后约束消失 | `flow-next`/`flow-brief` 每次从存储重新下发 `invariants`；agent 的 `--notes` 不参与判定 |
 | 凭记忆推进（换会话/长跑） | `--brief-hash` 绑定状态，过期即 `stale-brief`；自主任务缺哈希为 `unverified-turn` |
+| profile 承诺了跑不到的模块 | `validate_scope`：每个成员必须服务 profile 声明的至少一个阶段，否则构造即报错 |
+| 整 profile 计划接线撞车 | 同输入的两个产出者用不同类型区分（`analysis` / `analysis-report`），整 profile `module-plan` 不应出现 `ambiguous-input`（`tests/test_catalog_scope.py`） |
 | 目标被悄悄改写 | `flow-align` 对照存储 plan 列出 delta，有 delta 必须 `flow-replan` 留理由 |
 
 ## 11. 批次与验收
