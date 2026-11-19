@@ -318,7 +318,49 @@ profile 的静态接口很大（`llm-megatron` 有 31 项），但**按阶段切
 
 其余输入由主控实测、抽取或由上游模块接线；人不需要写整份 JSON，只需要给这些值和一句确认。
 
-## 9. 已知缺口
+## 9. 可复用 intake
+
+一个站点/模型要跑多个任务时，把"不变的事实"和"每次变的目标"分开写进一份文档（模板见 [examples/intake.json](../examples/intake.json)）：
+
+```json
+{"schema_version": 1, "revision": "2026-11-19",
+ "scope": {"site": "site-a", "engine": "megatron", "model_family": "llm", "model": "model-8b"},
+ "site": {"ssh_target": "…", "container": "…", "cwd": "…",
+          "commands": {"train": {"argv": ["bash", "train.sh"], "timeout_seconds": 3600, "basis": "…"}},
+          "devices": [], "occupancy": {}, "leases": []},
+ "source": {}, "paths": {}, "contracts": {}, "observation": {},
+ "authority": {"permissions": [], "budget": {}, "autonomy": {}},
+ "tasks": [{"task_id": "full-run", "mode": "full", "objective": "…", "acceptance": {},
+            "profile": {"id": "llm-megatron", "reason": "…"},
+            "use": {"contracts": ["environment", "quality"], "commands": ["train"]}}]}
+```
+
+| 块 | 复用粒度 | 谁维护 |
+| --- | --- | --- |
+| `site`（ssh/容器/命令卡/设备/占用/租约模板） | 站点级 | 站点负责人 |
+| `contracts`（environment/quality/training/adaptation/proxy）、`observation` | 模型级 | 阶段负责人 |
+| `source`、`paths` | 任务级（跟快照走） | 主控 |
+| `authority`（`permissions`、`budget` 信封、`autonomy`） | 授权信封，**任务只能收窄** | 人 |
+| `tasks[]` | 每个任务一条 | 主控起草、人确认 |
+
+两个命令：
+
+```bash
+python scripts/check_intake.py /private/task-a/intake.json
+python scripts/build_autonomous_task.py --intake /private/task-a/intake.json --output /private/task-a/bundles
+```
+
+- `check_intake` 只读检查：结构、`revision` 格式、每个任务是否被真实运行时接受（`validate_spec` + `validate_plan`）、**任务预算是否超过授权信封**、`use.contracts`/`use.commands` 是否存在、租约是否落在已准入设备上、声明的 profile 是否与 `scope` 一致。退出码 `0` 通过、`2` 需处理、`1` 文档本身畸形。
+- 生成器按任务展开到 `bundles/<task_id>/`（单个任务或 `--task <id>` 时直接写进 `--output`）：`task.json`、`plan.json`、`admission.json`、`cards/*.json`，另加 `contracts/*.json`、`leases.json`（含 owner/ttl，用于 `lease-acquire`）与 `inputs.json`（`observation`/`paths`/`source`）。
+
+边界要讲清楚：
+
+1. **复用不等于长期授权**：`authority.budget` 是信封，`tasks[].budget` 只能更小；租约是预约，每次运行前用 `lease-acquire` 重新取得。
+2. **`revision` 目前只是标记**：改了站点或契约不会让已建任务失效，需要按 `task-context` + `flow-replan` 显式重置。
+3. **生成的 bundle 仍需人确认**：`task.json` 的 `objective`/`context`/`profile` 与 `plan.json` 的 `acceptance` 就是第 7 节说的"人必须确认的那几项"，生成成功不代表验收成立。
+4. **人只需要给值**：每个 `tasks[]` 只写目标、验收、预算与所用契约/命令，其余输入的主控/站点归属见第 8 节。
+
+## 10. 已知缺口
 
 - 非 `full` 模式下 `flow-next` 的 `invariants.gates` 仍按全量门禁输出，而 `required_reports` 只要求该模式的交付报告：读 `invariants` 时以 `required_reports` 为准。
 - `analyze`/`diagnose` 且声明了 engine 时，路由会同时命中训练 profile 与 `analysis-only`，需要显式选择并记录理由。

@@ -660,3 +660,12 @@ HCU-Knowledge阶段已提交3829ef06、tag v0.5.6，两远端核对current且工
 - 导航：README 文档索引与 `workflow-modules.md` §9 各加一行入口。
 - 验证：`check_documentation` 209 页 / 120 CLI 示例 / 50 JSON 示例 0 issues（新增的 13 条命令与 6 段 JSON 示例全部通过校验）。
 - 追加 §7 修订与 §8：区分"谁写 JSON"（格式由主控生成，`objective`/`context`/`acceptance`/`permissions`/`budget`/`autonomy` 的内容由人负责，`flow-start` 暂不强制确认），并按模块（24）、子工作流（16）、profile 分阶段（4）逐一列出人必须提供的输入；输入分 H（只有人能定）/S（现场事实）/A（主控实测或内部接线）三类。结论：人实际只给六类值，其余由主控实测、抽取或上游接线。
+
+## 2026-11-19：可复用 intake（示例 + 展开 + 校验）
+
+- 背景：一份站点契约只服务一个任务；同一模型要跑"只检查环境""完整推进"时，设备、命令卡、契约、授权信封每次都要重填。
+- `examples/intake.json`：把 `site`/`source`/`paths`/`contracts`/`observation`/`authority` 作为可复用块，`tasks[]` 只写每次变化的 `mode`/`objective`/`acceptance`/`budget`/`profile`/`use`。
+- 新增 `src/hcu_trainflow/intake.py`：`load`（结构闭集）、`check`（阻断项 + 提示项）、`expand`（把一个任务展开成生成器输入）。校验覆盖：`revision` 格式、每个任务被 `validate_spec`+`validate_plan` 接受、**任务预算不得超过 `authority.budget`**、`use.contracts`/`use.commands` 必须存在、租约必须落在已准入设备（节点名仅在唯一时展开）、`profile` 必须与 `scope` 的 engine/model_family 一致。
+- 生成器新增 `--intake` / `--task`：按任务展开到 `bundles/<task_id>/`，多写 `contracts/*.json`、`leases.json`（含 owner/ttl）、`inputs.json`；`--intake` 与站点契约二选一，站点契约路径的输出结构保持不变；`build()` 增加 `require_autonomy` 开关，站点契约仍强制 autonomy。
+- 新增 `scripts/check_intake.py`：只读检查，退出码 0/2/1；文档新增 §9（复用粒度、两条命令、四条边界：复用≠长期授权、`revision` 只是标记、bundle 仍需人确认、人只给值）。
+- 验证：`tests/test_intake.py` 11 项（展开只带声明的契约/命令、生成物被真实运行时接受、预算越界、未知契约/命令、租约匹配与节点歧义、profile 冲突、结构校验、CLI 逐任务布局与防覆盖、单任务展开、check 退出码）；`tests/test_autonomous_task.py` 既有 13 项仍通过。

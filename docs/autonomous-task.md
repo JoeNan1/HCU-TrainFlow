@@ -25,6 +25,15 @@ python scripts/build_autonomous_task.py /private/task-a/site.json --output /priv
 
 生成 `task.json`、`plan.json`、`admission.json` 与 `cards/*.json`，并打印后续命令。生成器**不执行任何命令、不连现场、不覆盖已存在的目录**；`admission.json` 的 `context` 由任务 context 自动派生，无需手工粘贴哈希——相应地，用 `task-context` 更换上下文后必须重新生成准入契约，否则占用证据与任务上下文不匹配。
 
+同一站点或模型要跑多个任务时用可复用 intake，避免每次都重填设备、命令和契约：
+
+```bash
+python scripts/check_intake.py /private/task-a/intake.json
+python scripts/build_autonomous_task.py --intake /private/task-a/intake.json --output /private/task-a/bundles
+```
+
+intake 把站点与模型级事实（`site`、`source`、`paths`、`contracts`、`observation`、`authority`）写一次，`tasks[]` 只写每次变化的目标、验收、预算与所用契约/命令；`--task <id>` 只展开其中一个。每个任务的 bundle 额外带 `contracts/*.json`、`leases.json` 与 `inputs.json`，布局与复用边界见[调用方式](invocation-model.md#9-可复用-intake)。
+
 ## 3. 启动与无人推进
 
 ```bash
